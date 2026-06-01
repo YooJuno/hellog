@@ -1,0 +1,18 @@
+{
+	email juno980220@naver.com
+}
+
+btc-trading-agent.com {
+	encode zstd gzip
+
+	@backend path /api /api/* /oauth2 /oauth2/* /login /login/*
+	handle @backend {
+		reverse_proxy 127.0.0.1:8081
+	}
+
+	handle {
+		root * /var/www/health-logger
+		try_files {path} /index.html
+		file_server
+	}
+}
