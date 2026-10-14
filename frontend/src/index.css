@@ -1,18 +1,20 @@
 :root {
-  --bg: #f6f5f2;
+  --bg: #eef6ff;
   --panel: #ffffff;
-  --surface: #fafaf8;
+  --surface: #f4f8ff;
   --input: #ffffff;
-  --border: #e5e6df;
-  --border-strong: #ced1c6;
-  --text: #51564b;
-  --text-strong: #252823;
-  --muted: #747a6b;
-  --accent: #52634a;
-  --success: #52634a;
-  --danger: #a3483c;
-  --button-soft: #edf0e8;
-  --shadow: 0 2px 12px rgb(37 40 35 / 4%);
+  --border: #9cb6d2;
+  --border-strong: #6f8faf;
+  --text: #334965;
+  --text-strong: #142f50;
+  --muted: #4c617d;
+  --accent: #086ebc;
+  --accent-hover: #00589e;
+  --chart-secondary: #3689cc;
+  --success: #16714c;
+  --danger: #b42337;
+  --button-soft: #e1efff;
+  --shadow: 0 2px 12px rgb(20 47 80 / 4%);
   color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", "Noto Sans KR", sans-serif;
   font-size: 16px;
@@ -109,7 +111,7 @@ h3 {
 
 ::selection {
   color: var(--text-strong);
-  background: #dfe6d8;
+  background: var(--button-soft);
 }
 
 @media (prefers-reduced-motion: reduce) {
