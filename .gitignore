@@ -6,3 +6,10 @@ frontend/dist/
 
 .DS_Store
 *.log
+node_modules/
+.firebase/
+.env.local
+.env.*.local
+firestore-debug.log
+ui-debug.log
+gha-creds-*.json

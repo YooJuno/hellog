@@ -24,9 +24,27 @@ import {
   Trash2,
 } from 'lucide-react'
 import './App.css'
+import WorkoutSidebar from './components/WorkoutSidebar.jsx'
+import { subscribeAuth, signIn, signOut } from './lib/firebaseClient.js'
+import {
+  listWorkouts,
+  saveWorkout as persistWorkout,
+  deleteWorkout as removeWorkout,
+  listMachines,
+  saveMachine as persistMachine,
+  deleteMachine as removeMachine,
+} from './lib/firebaseRepository.js'
 
-const today = new Date().toISOString().slice(0, 10)
+const now = new Date()
+const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 const todayTimestamp = new Date(`${today}T00:00:00`).getTime()
+const displayDate = now.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long' })
+
+const PAGES = {
+  log: { title: '오늘의 운동', description: '한 세트씩, 나의 페이스로 기록하세요.' },
+  history: { title: '쌓여가는 기록', description: '지난 운동을 돌아보고 다음 루틴을 준비하세요.' },
+  gym: { title: '나의 운동 목록', description: '자주 쓰는 기구와 운동을 한곳에 정리하세요.' },
+}
 
 const CATEGORIES = [
   { id: 'CHEST', label: '가슴' },
@@ -161,16 +179,12 @@ function groupByEquipment(items) {
   })).filter((group) => group.items.length > 0)
 }
 
-function exerciseKey(item) {
-  return `${item.category}::${item.name}`.toLowerCase()
-}
-
 function machineManufacturer(machine) {
   return machine?.manufacturer?.trim() || ''
 }
 
 function exerciseManufacturer(machines, exercise) {
-  return machineManufacturer(findMachine(machines, exercise))
+  return exercise.manufacturer || machineManufacturer(findMachine(machines, exercise))
 }
 
 function machineMeta(machine) {
@@ -192,28 +206,6 @@ function matchesExerciseQuery(item, query) {
   return candidates.some((candidate) => normalizeSearch(candidate).includes(normalizedQuery))
 }
 
-async function getErrorMessage(response, fallback) {
-  const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) {
-    const payload = await response.json().catch(() => null)
-    if (payload?.message) return payload.message
-    if (payload?.error) return payload.error
-  }
-  const text = await response.text().catch(() => '')
-  return text || fallback
-}
-
-async function apiFetch(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: 'include',
-    ...options,
-    headers: {
-      ...(options.headers || {}),
-    },
-  })
-  return response
-}
-
 function findMachine(machines, exercise) {
   if (exercise.machineId) {
     const byId = machines.find((machine) => String(machine.id) === String(exercise.machineId))
@@ -230,7 +222,7 @@ function exerciseCategory(machines, exercise) {
   return exercise.category || findMachine(machines, exercise)?.category || ''
 }
 
-function toPayload(form) {
+function toPayload(form, machines) {
   return {
     workoutDate: form.workoutDate,
     title: form.title.trim() || '운동 기록',
@@ -241,6 +233,7 @@ function toPayload(form) {
         category: exercise.category || null,
         exerciseName: exercise.exerciseName.trim(),
         equipment: exercise.equipment?.trim() || null,
+        manufacturer: exerciseManufacturer(machines, exercise) || null,
         memo: exercise.memo?.trim() || null,
         sets: exercise.sets.map((set) => ({
           weightKg: Number(set.weightKg || 0),
@@ -270,6 +263,7 @@ function fromWorkout(workout, machines) {
         machineId: machine ? String(machine.id) : '',
         exerciseName: exercise.exerciseName,
         equipment: exercise.equipment || machine?.equipmentType || '',
+        manufacturer: exercise.manufacturer || machine?.manufacturer || '',
         memo: exercise.memo || '',
         sets: exercise.sets.map((set) => ({
           weightKg: Number(set.weightKg),
@@ -291,6 +285,8 @@ function App() {
   const [editingId, setEditingId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [loginPending, setLoginPending] = useState(false)
+  const [machineSaving, setMachineSaving] = useState(false)
   const [error, setError] = useState('')
   const [draftMeta, setDraftMeta] = useState({ ready: false, restored: false, savedAt: '' })
   const draftUserRef = useRef(null)
@@ -308,7 +304,7 @@ function App() {
       if (left.workoutDate !== right.workoutDate) {
         return right.workoutDate.localeCompare(left.workoutDate)
       }
-      return (right.id || 0) - (left.id || 0)
+      return 0
     })
 
     const recent = sorted.slice(0, 4)
@@ -325,7 +321,7 @@ function App() {
       start.setDate(start.getDate() - 6)
       start.setHours(0, 0, 0, 0)
       const count = sorted.filter((workout) => {
-        const date = new Date(workout.workoutDate)
+        const date = new Date(`${workout.workoutDate}T00:00:00`)
         return date >= start && date <= end
       }).length
       return {
@@ -335,8 +331,8 @@ function App() {
     }).reverse()
 
     const recentCategorySource = sorted.filter((workout) => {
-      const diff = Math.floor((todayTimestamp - new Date(workout.workoutDate).getTime()) / 86400000)
-      return diff <= 30
+      const diff = Math.floor((todayTimestamp - new Date(`${workout.workoutDate}T00:00:00`).getTime()) / 86400000)
+      return diff >= 0 && diff <= 30
     })
     const scopedCategorySource = recentCategorySource.length ? recentCategorySource : sorted
     const categoryTotals = new Map()
@@ -353,7 +349,7 @@ function App() {
       .sort((left, right) => right.count - left.count)
       .slice(0, 4)
 
-    const totalCategorySets = topCategories.reduce((sum, item) => sum + item.count, 0) || 1
+    const totalCategorySets = [...categoryTotals.values()].reduce((sum, count) => sum + count, 0) || 1
     const mainCategory = topCategories[0]
 
     const volumeSeries = sorted
@@ -469,15 +465,11 @@ function App() {
   }, [filters, machines, workouts])
 
   async function loadWorkouts() {
-    const response = await apiFetch('/api/workouts')
-    if (!response.ok) throw new Error('기록을 불러오지 못했습니다.')
-    setWorkouts(await response.json())
+    setWorkouts(await listWorkouts())
   }
 
   async function loadMachines() {
-    const response = await apiFetch('/api/machines')
-    if (!response.ok) throw new Error('운동 목록을 불러오지 못했습니다.')
-    setMachines(await response.json())
+    setMachines(await listMachines())
   }
 
   const persistDraft = useCallback((nextForm = form, nextEditingId = editingId) => {
@@ -527,80 +519,43 @@ function App() {
   }, [authStatus.user])
 
   useEffect(() => {
-    let ignore = false
+    let active = true
+    let version = 0
+    const unsubscribe = subscribeAuth(async (status) => {
+      const currentVersion = ++version
+      if (!active) return
+      setAuthStatus({ checked: true, ...status })
+      setWorkouts([])
+      setMachines([])
+      setForm(blankWorkout())
+      setEditingId(null)
+      setError('')
+      setLoading(status.authenticated)
+      if (!status.authenticated) return
 
-    async function loadAuthAndData() {
       try {
-        const authResponse = await apiFetch('/api/auth/me')
-        const authPayload = await authResponse.json()
-        if (ignore) return
-        setAuthStatus({
-          checked: true,
-          authenticated: authPayload.authenticated,
-          user: authPayload.user,
-          googleLoginEnabled: authPayload.googleLoginEnabled,
-        })
-
-        if (!authPayload.authenticated) {
-          setWorkouts([])
-          setMachines([])
-          return
-        }
-
-        const [workoutsResponse, machinesResponse] = await Promise.all([
-          apiFetch('/api/workouts'),
-          apiFetch('/api/machines'),
-        ])
-        if (!workoutsResponse.ok) throw new Error('기록을 불러오지 못했습니다.')
-        if (!machinesResponse.ok) throw new Error('운동 목록을 불러오지 못했습니다.')
-
-        const [nextWorkouts, nextMachines] = await Promise.all([
-          workoutsResponse.json(),
-          machinesResponse.json(),
-        ])
-        if (ignore) return
+        const [nextWorkouts, nextMachines] = await Promise.all([listWorkouts(), listMachines()])
+        if (!active || currentVersion !== version) return
         setWorkouts(nextWorkouts)
         setMachines(nextMachines)
       } catch (err) {
-        if (!ignore) setError(err.message)
+        if (active && currentVersion === version) setError(err.message)
       } finally {
-        if (!ignore) setLoading(false)
+        if (active && currentVersion === version) setLoading(false)
       }
-    }
+    }, (err) => {
+      if (!active) return
+      setError(err.message)
+      setAuthStatus({ checked: true, authenticated: false, user: null, googleLoginEnabled: false })
+      setLoading(false)
+    })
 
-    loadAuthAndData()
     return () => {
-      ignore = true
+      active = false
+      version += 1
+      unsubscribe()
     }
   }, [])
-
-  // Periodically check session validity (every 5 minutes)
-  useEffect(() => {
-    if (!authStatus.checked || !authStatus.authenticated) return
-
-    const checkSessionInterval = setInterval(async () => {
-      try {
-        const response = await apiFetch('/api/auth/me')
-        const payload = await response.json()
-        
-        // If session expired, update auth status
-        if (!payload.authenticated && authStatus.authenticated) {
-          setAuthStatus({
-            checked: true,
-            authenticated: false,
-            user: null,
-            googleLoginEnabled: authStatus.googleLoginEnabled,
-          })
-          setWorkouts([])
-          setMachines([])
-        }
-      } catch {
-        // Ignore network errors, session might still be valid
-      }
-    }, 5 * 60 * 1000) // 5 minutes
-
-    return () => clearInterval(checkSessionInterval)
-  }, [authStatus.checked, authStatus.authenticated, authStatus.googleLoginEnabled])
 
   useEffect(() => {
     if (!authStatus.authenticated || !authStatus.user?.id) {
@@ -684,7 +639,7 @@ function App() {
       exercises: current.exercises.map((exercise, exerciseIndex) => {
         if (exerciseIndex !== index) return exercise
         if (field === 'category') {
-          return { ...exercise, category: value, machineId: '', exerciseName: '', equipment: '' }
+          return { ...exercise, category: value, machineId: '', exerciseName: '', equipment: '', manufacturer: '' }
         }
         return { ...exercise, [field]: value }
       }),
@@ -703,6 +658,7 @@ function App() {
               machineId: String(machine.id),
               exerciseName: machine.name,
               equipment: machine.equipmentType,
+              manufacturer: machine.manufacturer || '',
             }
           : exercise,
       ),
@@ -767,7 +723,7 @@ function App() {
 
   async function saveWorkout(event) {
     event.preventDefault()
-    const payload = toPayload(form)
+    const payload = toPayload(form, machines)
     if (payload.exercises.length === 0) {
       setError('부위와 운동을 하나 이상 선택해주세요.')
       return
@@ -776,12 +732,7 @@ function App() {
     setSaving(true)
     setError('')
     try {
-      const response = await apiFetch(editingId ? `/api/workouts/${editingId}` : '/api/workouts', {
-        method: editingId ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      if (!response.ok) throw new Error(await getErrorMessage(response, '저장에 실패했습니다.'))
+      await persistWorkout(payload, editingId)
       clearDraft()
       setForm(blankWorkout())
       setEditingId(null)
@@ -796,17 +747,17 @@ function App() {
 
   async function deleteWorkout(id) {
     setError('')
-    const response = await apiFetch(`/api/workouts/${id}`, { method: 'DELETE' })
-    if (!response.ok) {
-      setError(await getErrorMessage(response, '삭제에 실패했습니다.'))
-      return
+    try {
+      await removeWorkout(id)
+      if (editingId === id) {
+        clearDraft()
+        setEditingId(null)
+        setForm(blankWorkout())
+      }
+      await loadWorkouts()
+    } catch (err) {
+      setError(err.message)
     }
-    if (editingId === id) {
-      clearDraft()
-      setEditingId(null)
-      setForm(blankWorkout())
-    }
-    await loadWorkouts()
   }
 
   function editWorkout(workout) {
@@ -839,32 +790,31 @@ function App() {
       return
     }
     setError('')
-    const response = await apiFetch('/api/machines', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    setMachineSaving(true)
+    try {
+      await persistMachine({
         category: machineForm.category,
         name: machineForm.name,
         equipmentType: machineForm.equipmentType,
         manufacturer: normalizedManufacturer(machineForm),
-      }),
-    })
-    if (!response.ok) {
-      setError(await getErrorMessage(response, '운동 추가에 실패했습니다.'))
-      return
+      })
+      setMachineForm(blankMachine())
+      await loadMachines()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setMachineSaving(false)
     }
-    setMachineForm(blankMachine())
-    await loadMachines()
   }
 
   async function deleteMachine(id) {
     setError('')
-    const response = await apiFetch(`/api/machines/${id}`, { method: 'DELETE' })
-    if (!response.ok) {
-      setError(await getErrorMessage(response, '운동 삭제에 실패했습니다.'))
-      return
+    try {
+      await removeMachine(id)
+      await loadMachines()
+    } catch (err) {
+      setError(err.message)
     }
-    await loadMachines()
   }
 
   function applyMachineSuggestion(suggestion) {
@@ -881,26 +831,58 @@ function App() {
     }))
   }
 
+  async function login() {
+    setLoginPending(true)
+    setError('')
+    try {
+      await signIn()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoginPending(false)
+    }
+  }
+
   async function logout() {
-    await apiFetch('/api/auth/logout', { method: 'POST' })
-    window.location.reload()
+    try {
+      persistDraft(form, editingId)
+      await signOut()
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   function renderLoginPrompt(title, description) {
     return (
       <section className="locked-panel">
         <div className="locked-panel__content">
-          <p className="eyebrow">Members</p>
+          <span className="welcome-mark" aria-hidden="true"><Dumbbell size={25} strokeWidth={1.5} /></span>
+          <p className="eyebrow">A little progress, every day</p>
           <h2>{title}</h2>
           <p>{description}</p>
           {authStatus.googleLoginEnabled ? (
-            <a className="auth-button" href="/oauth2/authorization/google">
-              <LogIn size={18} />
-              Google로 로그인
-            </a>
+            <button className="primary-button auth-button" type="button" onClick={login} disabled={loginPending}>
+              {loginPending ? <Loader2 className="spin" size={17} /> : <LogIn size={17} />}
+              Google로 시작하기
+            </button>
           ) : (
-            <p className="alert auth-alert">Google OAuth 설정이 아직 연결되지 않았습니다.</p>
+            <p className="setup-note">로그인 연결을 준비하고 있습니다.</p>
           )}
+          <small className="welcome-footnote">나의 기록과 운동 목록을 계정에 안전하게 보관합니다.</small>
+        </div>
+        <div className="welcome-guide">
+          <p className="eyebrow">기록에 필요한 것만</p>
+          {[
+            ['01', '오늘의 루틴', '운동 부위와 기구를 선택하세요.'],
+            ['02', '한 세트의 기록', '무게와 횟수, 기억할 메모를 남기세요.'],
+            ['03', '쌓여가는 변화', '지난 루틴을 돌아보고 이어가세요.'],
+          ].map(([number, label, detail]) => (
+            <div className="welcome-step" key={number}>
+              <span>{number}</span>
+              <div><h3>{label}</h3><p>{detail}</p></div>
+            </div>
+          ))}
+          <span className="welcome-guide__foot">YOUR OWN PACE.</span>
         </div>
       </section>
     )
@@ -908,113 +890,76 @@ function App() {
 
   if (loading && !authStatus.checked) {
     return (
-      <main className="app-shell auth-shell">
-        <section className="auth-panel">
-          <Loader2 className="spin muted" size={28} />
-          <h1>로그인 확인 중</h1>
-          <p>사용자별 운동 기록을 불러오고 있어요.</p>
-        </section>
+      <main className="app-shell auth-shell" aria-busy="true">
+        <div className="loading-state">
+          <span className="brand-mark"><Dumbbell size={20} /></span>
+          <h1>HelloG</h1>
+          <p><Loader2 className="spin" size={16} /> 운동 기록을 준비하고 있습니다.</p>
+        </div>
       </main>
     )
   }
 
   return (
     <main className="app-shell">
-      <section className="topbar">
-        <div>
-          <p className="eyebrow">Health Logger</p>
-          <h1>운동 기록</h1>
-        </div>
+      <header className="topbar">
+        <button className="brand" type="button" onClick={() => setActiveTab('log')} aria-label="HelloG 기록하기 홈">
+          <span className="brand-mark"><Dumbbell size={19} strokeWidth={1.8} /></span>
+          <span>HelloG<span className="brand-dot">.</span></span>
+        </button>
         <div className="topbar-actions">
-          <div className="today-pill">
-            <CalendarDays size={18} />
-            {today}
-          </div>
+          <time className="today-pill" dateTime={today}><CalendarDays size={15} />{displayDate}</time>
           {authStatus.authenticated ? (
             <div className="user-pill">
-              {authStatus.user?.pictureUrl ? (
-                <img alt="" src={authStatus.user.pictureUrl} />
-              ) : (
-                <span>{authStatus.user?.name?.slice(0, 1) || 'U'}</span>
-              )}
+              {authStatus.user?.pictureUrl ? <img alt="" src={authStatus.user.pictureUrl} referrerPolicy="no-referrer" /> : <span>{authStatus.user?.name?.slice(0, 1) || 'G'}</span>}
               <strong>{authStatus.user?.name || '회원'}</strong>
-              <button type="button" onClick={logout} title="로그아웃" aria-label="로그아웃">
-                <LogOut size={16} />
-              </button>
+              <button type="button" onClick={logout} title="로그아웃" aria-label="로그아웃"><LogOut size={16} /></button>
             </div>
           ) : authStatus.googleLoginEnabled ? (
-            <a className="auth-button topbar-login" href="/oauth2/authorization/google">
-              <LogIn size={18} />
-              로그인
-            </a>
-          ) : (
-            <div className="topbar-status">Google 로그인 준비 중</div>
-          )}
+            <button className="topbar-login" type="button" onClick={login} disabled={loginPending}>
+              {loginPending ? <Loader2 className="spin" size={15} /> : <LogIn size={15} />} 로그인
+            </button>
+          ) : null}
         </div>
-      </section>
-
-      {!authStatus.authenticated && (
-        <section className="auth-banner">
-          <div>
-            <p className="eyebrow">Personal sync</p>
-            <h2>로그인하여 운동정보를 기록하세요.</h2>
-            <p>기록, 운동 목록, 메모를 기기 바꿔도 그대로 이어서 볼 수 있어요.</p>
-          </div>
-          {authStatus.googleLoginEnabled ? (
-            <a className="auth-button" href="/oauth2/authorization/google">
-              <LogIn size={18} />
-              Google로 로그인
-            </a>
-          ) : (
-            <p className="alert auth-alert">Google OAuth 설정이 아직 연결되지 않았습니다.</p>
-          )}
-        </section>
-      )}
+      </header>
 
       <nav className="app-tabs" aria-label="화면 전환">
-        <button
-          className={activeTab === 'log' ? 'active' : ''}
-          type="button"
-          onClick={() => setActiveTab('log')}
-        >
-          <Dumbbell size={18} />
-          기록하기
-        </button>
-        <button
-          className={activeTab === 'history' ? 'active' : ''}
-          type="button"
-          onClick={() => setActiveTab('history')}
-        >
-          <History size={18} />
-          기록보기
-        </button>
-        <button
-          className={activeTab === 'gym' ? 'active' : ''}
-          type="button"
-          onClick={() => setActiveTab('gym')}
-        >
-          <Layers3 size={18} />
-          운동 목록
-        </button>
+        {[
+          ['log', Dumbbell, '기록하기'],
+          ['history', History, '기록보기'],
+          ['gym', Layers3, '운동 목록'],
+        ].map(([tab, Icon, label]) => (
+          <button key={tab} className={activeTab === tab ? 'active' : ''} type="button" aria-current={activeTab === tab ? 'page' : undefined} onClick={() => setActiveTab(tab)}>
+            <Icon size={17} strokeWidth={1.7} />{label}
+          </button>
+        ))}
       </nav>
 
-      {error && <p className="alert">{error}</p>}
+      <div className="page-heading">
+        <div><h1>{PAGES[activeTab].title}</h1><p>{PAGES[activeTab].description}</p></div>
+        {authStatus.authenticated && <span className="page-index">{activeTab === 'log' ? 'WORKOUT / 01' : activeTab === 'history' ? 'HISTORY / 02' : 'LIBRARY / 03'}</span>}
+      </div>
+
+      {error && <p className="alert" role="alert">{error}</p>}
+      {loading && authStatus.authenticated && <div className="data-loading" role="status"><Loader2 className="spin" size={16} /> 기록을 불러오고 있습니다.</div>}
 
       {activeTab === 'log' && (
         authStatus.authenticated ? (
+        <div className="workspace-grid">
         <form className="planner" onSubmit={saveWorkout}>
           <div className="section-heading">
             <div>
-              <p className="eyebrow">{editingId ? 'Edit routine' : 'New routine'}</p>
-              <h2>{editingId ? '기록 수정' : '오늘 루틴 입력'}</h2>
+              <h2>{editingId ? '기록 수정' : '루틴 작성'}</h2>
+              <p className="section-description">날짜와 운동을 선택해 시작하세요.</p>
             </div>
-            <button className="icon-button primary" type="submit" aria-label="저장" title="저장">
-              {saving ? <Loader2 className="spin" size={19} /> : <Save size={19} />}
-            </button>
+            <button className="text-button" type="button" onClick={startNewWorkout}><Plus size={15} /> 새로 작성</button>
           </div>
 
-          <div className="draft-strip">
+          <div className="session-details">
+          <div className="draft-strip" role="status">
             <div className="draft-strip__items">
+              <span className="draft-indicator" />
+              {!draftMeta.savedAt && !draftMeta.restored && <span className="draft-pill">작성 내용 자동 임시 저장</span>}
               {editingId && <span className="draft-pill accent">이전 기록 수정 중</span>}
               {draftMeta.restored && <span className="draft-pill">임시 저장 복구됨</span>}
               {draftMeta.savedAt && (
@@ -1022,12 +967,7 @@ function App() {
               )}
             </div>
             <div className="draft-strip__actions">
-              <button className="text-button" type="button" onClick={startNewWorkout}>
-                새 기록 시작
-              </button>
-              <button className="text-button" type="button" onClick={() => clearDraft({ resetForm: true })}>
-                임시저장 비우기
-              </button>
+              {draftMeta.savedAt && <button className="text-button muted" type="button" onClick={() => clearDraft({ resetForm: true })}>비우기</button>}
             </div>
           </div>
 
@@ -1036,6 +976,7 @@ function App() {
               날짜
               <input
                 type="date"
+                required
                 value={form.workoutDate}
                 onChange={(event) => setForm({ ...form, workoutDate: event.target.value })}
               />
@@ -1044,11 +985,14 @@ function App() {
               루틴 이름
               <input
                 value={form.title}
+                maxLength={100}
                 onChange={(event) => setForm({ ...form, title: event.target.value })}
                 placeholder="예: 하체, 등/이두"
               />
             </label>
           </div>
+          <details className="routine-note">
+            <summary>루틴 메모 <span>선택</span></summary>
           <label>
             메모
             <textarea
@@ -1056,8 +1000,11 @@ function App() {
               onChange={(event) => setForm({ ...form, memo: event.target.value })}
               placeholder="컨디션, 느낌, 다음에 올릴 무게"
               rows="2"
+              maxLength={2000}
             />
           </label>
+          </details>
+          </div>
 
           <div className="exercise-list">
             {form.exercises.map((exercise, exerciseIndex) => {
@@ -1070,9 +1017,9 @@ function App() {
                   <div className="exercise-card__head">
                     <span className="order-badge">{exerciseIndex + 1}</span>
                     <div>
-                      <h3>운동 순서 {exerciseIndex + 1}</h3>
+                      <h3>{exercise.exerciseName || '운동 선택'}</h3>
                       <p>
-                        {exercise.exerciseName || categoryLabel(exercise.category)} ·{' '}
+                        {categoryLabel(exercise.category)} ·{' '}
                         {exercise.sets.length}세트
                       </p>
                     </div>
@@ -1093,6 +1040,7 @@ function App() {
                         className={exercise.category === category.id ? 'selected' : ''}
                         key={category.id}
                         type="button"
+                        aria-pressed={exercise.category === category.id}
                         onClick={() => updateExercise(exerciseIndex, 'category', category.id)}
                       >
                         {category.label}
@@ -1100,14 +1048,14 @@ function App() {
                     ))}
                   </div>
 
-                  <div className="form-grid">
+                  <div className="exercise-select">
                     <label>
                       운동
                       <select
                         value={exercise.machineId}
                         onChange={(event) => selectMachine(exerciseIndex, event.target.value)}
                       >
-                        <option value="">선택</option>
+                        <option value="">{categoryLabel(exercise.category)} 운동을 선택하세요</option>
                         {groupedOptions.map((group) => (
                           <optgroup label={group.type} key={group.type}>
                             {group.items.map((machine) => (
@@ -1126,15 +1074,18 @@ function App() {
                   )}
 
                   <div className="sets">
+                    <div className="sets-heading" aria-hidden="true"><span>세트</span><span>무게 <small>kg</small></span><span>횟수</span><span /></div>
                     {exercise.sets.map((set, setIndex) => (
                       <div className="set-row" key={`set-${exerciseIndex}-${setIndex}`}>
-                        <span>{setIndex + 1}세트</span>
+                        <span>{String(setIndex + 1).padStart(2, '0')}</span>
                         <label>
-                          kg
+                          <span className="sr-only">운동 {exerciseIndex + 1}, {setIndex + 1}세트 무게 (kg)</span>
                           <input
                             type="number"
                             min="0"
                             step="0.5"
+                            required
+                            inputMode="decimal"
                             value={set.weightKg}
                             onChange={(event) =>
                               updateSet(exerciseIndex, setIndex, 'weightKg', event.target.value)
@@ -1142,10 +1093,13 @@ function App() {
                           />
                         </label>
                         <label>
-                          개
+                          <span className="sr-only">운동 {exerciseIndex + 1}, {setIndex + 1}세트 횟수</span>
                           <input
                             type="number"
                             min="1"
+                            step="1"
+                            required
+                            inputMode="numeric"
                             value={set.reps}
                             onChange={(event) =>
                               updateSet(exerciseIndex, setIndex, 'reps', event.target.value)
@@ -1196,12 +1150,18 @@ function App() {
                 <Plus size={18} />새 기록
               </button>
             )}
+            <button className="primary-button" type="submit" disabled={saving || loading}>
+              {saving ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+              {saving ? '저장 중' : editingId ? '수정 저장' : '기록 저장'}
+            </button>
           </div>
         </form>
+        <WorkoutSidebar form={form} recentWorkout={selectedWorkout} onDuplicate={duplicateWorkout} />
+        </div>
         ) : (
           renderLoginPrompt(
-            '로그인하면 오늘 루틴을 바로 기록할 수 있어요.',
-            '운동 순서, 세트, 무게, 메모를 회원별로 저장해서 폰에서도 이어서 확인할 수 있습니다.',
+            '매일의 운동을,\n나만의 기록으로.',
+            '오늘 들었던 무게, 마지막 한 번까지. 간결하게 기록하고 다음 운동에 이어가세요.',
           )
         )
       )}
@@ -1212,12 +1172,12 @@ function App() {
           <section className="metric-strip" aria-label="운동 요약">
             <div className="metric">
               <Activity size={20} />
-              <span>최근 기록</span>
+              <span>전체 운동 기록</span>
               <strong>{workouts.length}회</strong>
             </div>
             <div className="metric">
               <Flame size={20} />
-              <span>최근 볼륨</span>
+              <span>최근 7회 볼륨</span>
               <strong>{formatNumber(weeklyVolume)}kg</strong>
             </div>
             <div className="metric highlight">
@@ -1238,7 +1198,7 @@ function App() {
                   {insights.volumeChange >= 0 ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}
                 </div>
                 <div className="trend-stat">
-                  <strong>{formatSignedNumber(insights.volumeChange, '%')}</strong>
+                  <strong>{insights.averageVolumePrevious ? formatSignedNumber(insights.volumeChange, '%') : '—'}</strong>
                   <span>최근 {insights.recentCount}회 평균 볼륨</span>
                 </div>
                 <div className="sparkline">
@@ -1344,14 +1304,14 @@ function App() {
 
           <div className="section-heading">
             <div>
-              <p className="eyebrow">History</p>
-              <h2>기록보기</h2>
+              <h2>운동 내역 <span className="count-label">{filteredWorkouts.length}</span></h2>
             </div>
             {loading && <Loader2 className="spin muted" size={20} />}
           </div>
 
           <div className="filter-bar">
             <label className="search-field">
+              <span className="sr-only">기록 검색</span>
               <Search size={17} />
               <input
                 value={filters.query}
@@ -1460,15 +1420,17 @@ function App() {
             {!loading && filteredWorkouts.length === 0 && (
               <div className="empty-state">
                 <Dumbbell size={30} />
-                <p>기록이 없습니다.</p>
+                <h3>{workouts.length ? '검색 결과가 없습니다.' : '아직 운동 기록이 없습니다.'}</h3>
+                <p>{workouts.length ? '검색어나 날짜 범위를 바꿔보세요.' : '첫 루틴을 기록하고 나만의 흐름을 만들어보세요.'}</p>
+                {!workouts.length && <button className="secondary-button" type="button" onClick={() => setActiveTab('log')}><Plus size={16} /> 첫 운동 기록하기</button>}
               </div>
             )}
           </div>
         </section>
         ) : (
           renderLoginPrompt(
-            '로그인하면 지난 운동 기록을 날짜별로 다시 볼 수 있어요.',
-            '루틴, 운동 이름, 메모 검색까지 회원 기준으로 정리해서 보여줍니다.',
+            '지난 운동이,\n다음 운동의 기준이 되도록.',
+            '날짜와 부위별 기록을 살펴보고, 익숙한 루틴을 다시 시작하세요.',
           )
         )
       )}
@@ -1478,8 +1440,8 @@ function App() {
         <section className="gym-page">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Exercise library</p>
-              <h2>나의 운동 목록</h2>
+              <h2>운동 추가</h2>
+              <p className="section-description">목록에 없는 운동을 직접 등록하세요.</p>
             </div>
           </div>
 
@@ -1501,6 +1463,8 @@ function App() {
               운동 이름
               <input
                 value={machineForm.name}
+                maxLength={100}
+                required
                 onChange={(event) => setMachineForm({ ...machineForm, name: event.target.value })}
                 placeholder="예: 체스트 프레스, 사이드 레터럴 레이즈"
               />
@@ -1581,8 +1545,8 @@ function App() {
                 />
               </label>
             )}
-            <button className="icon-button primary" type="submit" aria-label="운동 추가" title="운동 추가">
-              <Plus size={19} />
+            <button className="primary-button" type="submit" disabled={machineSaving || loading}>
+              {machineSaving ? <Loader2 className="spin" size={17} /> : <Plus size={17} />} 운동 추가
             </button>
           </form>
 
@@ -1594,6 +1558,7 @@ function App() {
                   <span>{(machinesByCategory[category.id] || []).length}개</span>
                 </div>
                 <div className="machine-list">
+                  {(machinesByCategory[category.id] || []).length === 0 && <p className="machine-empty">등록된 운동이 없습니다.</p>}
                   {(machinesByCategory[category.id] || []).map((machine) => (
                     <div className="machine-row" key={machine.id}>
                       <div>
@@ -1618,8 +1583,8 @@ function App() {
         </section>
         ) : (
           renderLoginPrompt(
-            '로그인하면 헬스장 운동 목록을 내 방식대로 관리할 수 있어요.',
-            '부위별 운동 추가, 추천 검색, 머신 제조사 관리까지 회원 계정에 맞춰 따로 저장됩니다.',
+            '내가 하는 운동,\n내 방식대로 정리하세요.',
+            '기본 운동부터 헬스장의 기구까지. 필요한 운동을 내 목록에 담으세요.',
           )
         )
       )}

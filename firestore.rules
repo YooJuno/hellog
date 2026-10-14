@@ -1,0 +1,81 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function exactly(data, fields) {
+      return data.keys().hasAll(fields) && data.keys().hasOnly(fields);
+    }
+
+    function nullableText(value, maxLength) {
+      return value == null || (value is string && value.size() <= maxLength);
+    }
+
+    function validTimestamps(data) {
+      return data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
+    function validWorkout(data) {
+      return exactly(data, [
+          'workoutDate', 'title', 'memo', 'exercises', 'createdAt', 'updatedAt'
+        ]) &&
+        data.workoutDate is string &&
+        data.workoutDate.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$') &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+        nullableText(data.memo, 2000) &&
+        data.exercises is list && data.exercises.size() >= 1 && data.exercises.size() <= 30 &&
+        validTimestamps(data);
+    }
+
+    function validMachine(data) {
+      return exactly(data, [
+          'category', 'name', 'equipmentType', 'manufacturer', 'createdAt', 'updatedAt'
+        ]) &&
+        data.category in ['CHEST', 'BACK', 'LEGS', 'SHOULDERS', 'ARMS', 'CORE'] &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.equipmentType in ['머신', '케이블', '바벨', '덤벨', '맨몸', '기타'] &&
+        nullableText(data.manufacturer, 100) &&
+        validTimestamps(data);
+    }
+
+    function createdNow(data) {
+      return data.createdAt == request.time && data.updatedAt == request.time;
+    }
+
+    function updatedNow(data) {
+      return data.createdAt == resource.data.createdAt && data.updatedAt == request.time;
+    }
+
+    match /users/{uid}/workouts/{workoutId} {
+      allow read: if owns(uid);
+      // Rules enforce document fields and exercise count. The client validates
+      // each nested exercise and set; Rules cannot iterate arbitrary lists.
+      allow create: if owns(uid) && validWorkout(request.resource.data) && createdNow(request.resource.data);
+      allow update: if owns(uid) && validWorkout(request.resource.data) && updatedNow(request.resource.data);
+      allow delete: if owns(uid);
+    }
+
+    match /users/{uid}/machines/{machineId} {
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validMachine(request.resource.data) && createdNow(request.resource.data);
+      allow update: if owns(uid) && validMachine(request.resource.data) && updatedNow(request.resource.data);
+      allow delete: if owns(uid);
+    }
+
+    match /users/{uid}/hiddenMachines/{machineId} {
+      allow read: if owns(uid);
+      allow create, update: if owns(uid) &&
+        machineId.matches('^default-(chest|back|legs|shoulders|arms|core)-[0-9]{2}$') &&
+        exactly(request.resource.data, ['hidden']) && request.resource.data.hidden == true;
+      allow delete: if owns(uid);
+    }
+
+    // User profiles, other collections, and deeper subcollections are private.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

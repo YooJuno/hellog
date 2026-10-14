@@ -1,16 +1,14 @@
-# React + Vite
+# HelloG frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 + Vite + Firebase Web SDK로 구성한 운동 기록 화면입니다.
 
-Currently, two official plugins are available:
+프로젝트 루트의 [README](../README.md)와 [Firebase 배포 가이드](../FIREBASE_DEPLOYMENT.md)를 참고하세요.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- `src/App.jsx`: 기록·조회·운동 목록과 계정별 초안 관리
+- `src/components/WorkoutSidebar.jsx`: 입력한 운동의 요약
+- `src/lib/firebaseClient.js`: Firebase 초기화, Google 로그인과 인증 구독
+- `src/lib/firebaseRepository.js`: 사용자 UID별 Firestore 저장·조회·검증
+- `src/data/defaultMachines.js`: 기존 기본 운동 50개
+- `src/index.css`, `src/App.css`: 단색 토큰, 화면 스타일과 반응형 레이아웃
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+`npm run dev`로 개발하고 `npm run lint`, `npm run build`로 확인합니다. 실제 배포는 프로젝트 루트의 `npm run deploy`를 사용하며, 필수 Firebase 설정과 에뮬레이터 비활성화를 검사합니다.
