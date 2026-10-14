@@ -2,6 +2,8 @@
 
 간결하게 운동·세트·무게·횟수를 기록하는 앱입니다. `feat/firebase-clean-ui` 브랜치는 React + Firebase Hosting / Authentication / Cloud Firestore로 구성되어 별도 Java 서버 없이 운영합니다.
 
+운영 주소: **[https://hellog-juno.web.app](https://hellog-juno.web.app)**
+
 ## 기능
 
 - 기록하기: 부위와 기구 선택, 세트별 무게·횟수·메모, 실시간 루틴 요약
@@ -40,10 +42,10 @@ npm run build
 npm run test:firebase
 ```
 
-기본 배포 대상은 `hellog-juno`입니다. Firebase 콘솔에서 Google 로그인과 Firestore를 활성화하고 CLI 로그인을 마치면 배포합니다.
+기본 배포 대상은 `hellog-juno`입니다. Google 로그인과 서울 지역의 기본 Firestore 데이터베이스가 구성되어 있습니다. CLI 로그인 후 다시 배포할 수 있습니다.
 
 ```bash
-npx firebase login
+npx firebase login --interactive
 npm run deploy
 ```
 

@@ -2,7 +2,9 @@
 
 이 구성은 React 앱을 Firebase Hosting에 올리고, Google 로그인과 회원별 기록을 Firebase Authentication / Cloud Firestore에 저장합니다. 운영용 Java 서버나 별도 서버 인스턴스는 필요하지 않습니다. 저장소의 `backend/`와 기존 H2 파일은 그대로 남아 있으며, 기존 기록을 Firestore로 자동 이전하지는 않습니다.
 
-현재 기본 배포 대상은 `hellog-juno`입니다. 제공받은 웹 앱 설정값은 Git에서 제외되는 `frontend/.env.local`에 반영했습니다. 새로 체크아웃한 환경에서는 아래 방법으로 설정값을 다시 입력해야 합니다. 아직 클라우드에 배포하지 않았습니다.
+현재 기본 배포 대상은 `hellog-juno`입니다. 제공받은 웹 앱 설정값은 Git에서 제외되는 `frontend/.env.local`에 반영했습니다. 새로 체크아웃한 환경에서는 아래 방법으로 설정값을 다시 입력해야 합니다.
+
+2026-10-14에 **[https://hellog-juno.web.app](https://hellog-juno.web.app)**로 배포했습니다. Google 로그인은 활성화되어 있으며, Firestore는 서울(`asia-northeast3`)의 `(default)` Standard 데이터베이스를 사용합니다. 결제 계정이 연결되지 않은 상태(`billingEnabled: false`)를 확인했습니다. 모바일·데스크톱의 세 화면, Google OAuth 로그인 페이지 연결과 비로그인 Firestore 접근 차단을 확인했습니다. 실제 Google 계정으로 로그인한 뒤 기록을 저장하는 사용자 동작은 직접 확인하지 않았습니다.
 
 ## 무료 운영 범위
 
@@ -29,9 +31,9 @@ Hosting 전송량은 현재 공식 요금표와 상세 문서의 표기가 다�
 
 1. [Firebase 콘솔](https://console.firebase.google.com/)에서 프로젝트를 만들고 Spark 요금제를 유지합니다. Analytics는 이 앱에 필수가 아닙니다.
 2. 프로젝트 설정에서 웹 앱을 등록하고 Firebase SDK 설정의 `apiKey`, `authDomain`, `projectId`, `appId` 값을 확인합니다.
-3. Authentication에서 Google 로그인 제공업체를 활성화하고 지원 이메일을 지정합니다. [Google 로그인 설정](https://firebase.google.com/docs/auth/web/google-signin).
+3. 이 프로젝트는 `firebase.json`의 `auth.providers.googleSignIn`으로 Google 로그인과 OAuth 브랜드를 관리합니다. 다른 프로젝트에 사용할 때는 지원 이메일을 해당 프로젝트에서 사용할 계정의 이메일로 변경합니다. 배포 시 제공업체가 활성화됩니다. [CLI 인증 제공업체 설정](https://firebase.google.com/docs/auth/configure-providers-cli).
 4. Authentication의 설정 → 승인된 도메인에 사용할 Hosting 도메인과 사용자 지정 도메인이 있는지 확인합니다. 실제 Firebase 계정으로 로컬 개발을 할 때는 `localhost`를 추가합니다. **2025-04-28 이후 생성된 프로젝트에서는 `localhost`가 기본 추가되지 않습니다.** [인증 도메인 안내](https://firebase.google.com/docs/auth/faq-and-troubleshooting).
-5. Cloud Firestore를 **Standard edition**, 데이터베이스 ID `(default)`, **프로덕션 모드**로 생성합니다. 프로덕션 모드에서는 기본 규칙이 접근을 차단하며, 아래 배포 단계에서 앱 규칙으로 교체합니다. [Firestore 시작하기](https://firebase.google.com/docs/firestore/quickstart).
+5. `firebase.json`은 **Standard edition**, 데이터베이스 ID `(default)`, 서울 지역을 지정합니다. 데이터베이스가 없으면 배포 중 생성되며, 회원별 접근 규칙을 함께 적용합니다. 콘솔에서 미리 생성한다면 **프로덕션 모드**를 선택합니다. [Firestore 시작하기](https://firebase.google.com/docs/firestore/quickstart).
 6. 한국에서 주로 사용하는 앱이라면 데이터베이스 위치로 `asia-northeast3`(서울)를 선택할 수 있습니다. 생성 전에 위치를 확인하세요. [Firestore 위치](https://firebase.google.com/docs/firestore/locations).
 
 ## 2. 환경 변수와 의존성
@@ -64,7 +66,7 @@ Firebase 웹 설정은 브라우저에 공개되는 값입니다. 서비스 계�
 Firebase CLI는 루트 개발 의존성에 `15.33.0`으로 고정되어 있습니다. 별도 전역 설치 없이 동일한 버전으로 실행할 수 있습니다.
 
 ```bash
-npx firebase-tools@15.33.0 login
+npx firebase-tools@15.33.0 login --interactive
 npx firebase-tools@15.33.0 use --add
 ```
 
@@ -79,7 +81,7 @@ npm run build
 npm run deploy
 ```
 
-`deploy`는 Hosting, Firestore 규칙, 인덱스를 함께 배포합니다. Hosting의 `predeploy`에서 `build:firebase`를 실행해 필수 환경 변수와 에뮬레이터 설정을 검증하고 프론트엔드를 운영 모드로 빌드합니다. 직접 Firebase CLI로 배포해도 같은 검증을 거칩니다. `firebase init`은 필요하지 않습니다. 기존 구성 파일이 이미 있으므로 초기화로 덮어쓰지 마세요.
+`deploy`는 Hosting, Google 로그인 설정, Firestore 규칙, 인덱스를 함께 배포합니다. Hosting의 `predeploy`에서 `build:firebase`를 실행해 필수 환경 변수와 에뮬레이터 설정을 검증하고 프론트엔드를 운영 모드로 빌드합니다. 직접 Firebase CLI로 배포해도 같은 검증을 거칩니다. `firebase init`은 필요하지 않습니다. 기존 구성 파일이 이미 있으므로 초기화로 덮어쓰지 마세요.
 
 Hosting은 `frontend/dist`를 배포하고 SPA 경로를 `index.html`로 연결합니다. HTML과 일반 경로는 캐시하지 않고, 파일명에 해시가 붙는 `/assets/` 파일은 장기 캐시합니다. [Hosting 설정](https://firebase.google.com/docs/hosting/full-config).
 
