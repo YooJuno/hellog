@@ -6,6 +6,7 @@ import {
   BarChart3,
   CalendarDays,
   Check,
+  ChevronDown,
   Copy,
   Dumbbell,
   Flame,
@@ -22,9 +23,11 @@ import {
   Search,
   Target,
   Trash2,
+  X,
 } from 'lucide-react'
 import './App.css'
 import WorkoutSidebar from './components/WorkoutSidebar.jsx'
+import ConfirmDialog from './components/ConfirmDialog.jsx'
 import { subscribeAuth, signIn, signOut } from './lib/firebaseClient.js'
 import {
   listWorkouts,
@@ -288,8 +291,17 @@ function App() {
   const [loginPending, setLoginPending] = useState(false)
   const [machineSaving, setMachineSaving] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [confirmation, setConfirmation] = useState(null)
+  const [machineQuery, setMachineQuery] = useState('')
+  const [showInsights, setShowInsights] = useState(() => window.matchMedia('(min-width: 601px)').matches)
   const [draftMeta, setDraftMeta] = useState({ ready: false, restored: false, savedAt: '' })
   const draftUserRef = useRef(null)
+  const exerciseListRef = useRef(null)
+  const focusNewExerciseRef = useRef(false)
+  const feedbackRef = useRef(null)
+
+  const hasFilters = Boolean(filters.query || filters.category !== 'ALL' || filters.from || filters.to)
 
   const selectedWorkout = workouts[0]
   const weeklyVolume = useMemo(
@@ -419,6 +431,14 @@ function App() {
     [machines],
   )
 
+  const visibleMachineGroups = useMemo(() => CATEGORIES.map((category) => ({
+    ...category,
+    items: (machinesByCategory[category.id] || []).filter((machine) =>
+      normalizeSearch(`${machine.name} ${machineMeta(machine)} ${category.label}`)
+        .includes(normalizeSearch(machineQuery)),
+    ),
+  })).filter((category) => !machineQuery.trim() || category.items.length > 0), [machinesByCategory, machineQuery])
+
   const exerciseCatalog = useMemo(() => {
     return machines.map((machine) => ({
       category: machine.category,
@@ -530,6 +550,8 @@ function App() {
       setForm(blankWorkout())
       setEditingId(null)
       setError('')
+      setNotice('')
+      setConfirmation(null)
       setLoading(status.authenticated)
       if (!status.authenticated) return
 
@@ -682,8 +704,24 @@ function App() {
   }
 
   function addExercise() {
+    focusNewExerciseRef.current = true
     setForm((current) => ({ ...current, exercises: [...current.exercises, blankExercise()] }))
   }
+
+  useEffect(() => {
+    if (!focusNewExerciseRef.current) return
+    focusNewExerciseRef.current = false
+    const card = exerciseListRef.current?.lastElementChild
+    card?.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
+    card?.querySelector('select')?.focus({ preventScroll: true })
+  }, [form.exercises.length])
+
+  useEffect(() => {
+    if (error) {
+      feedbackRef.current?.scrollIntoView({ block: 'center', behavior: 'instant' })
+      feedbackRef.current?.focus({ preventScroll: true })
+    }
+  }, [error])
 
   function removeExercise(index) {
     setForm((current) => ({
@@ -699,7 +737,7 @@ function App() {
     setForm((current) => ({
       ...current,
       exercises: current.exercises.map((exercise, index) =>
-        index === exerciseIndex ? { ...exercise, sets: [...exercise.sets, blankSet()] } : exercise,
+        index === exerciseIndex ? { ...exercise, sets: [...exercise.sets, { ...exercise.sets.at(-1) }] } : exercise,
       ),
     }))
   }
@@ -731,13 +769,17 @@ function App() {
 
     setSaving(true)
     setError('')
+    setNotice('')
     try {
       await persistWorkout(payload, editingId)
       clearDraft()
       setForm(blankWorkout())
       setEditingId(null)
       setActiveTab('history')
+      setFilters({ query: '', category: 'ALL', from: '', to: '' })
       await loadWorkouts()
+      setNotice(editingId ? '운동 기록을 수정했어요.' : '운동 기록을 저장했어요.')
+      window.scrollTo({ top: 0, behavior: 'instant' })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -747,6 +789,7 @@ function App() {
 
   async function deleteWorkout(id) {
     setError('')
+    setNotice('')
     try {
       await removeWorkout(id)
       if (editingId === id) {
@@ -755,32 +798,56 @@ function App() {
         setForm(blankWorkout())
       }
       await loadWorkouts()
+      setNotice('운동 기록을 삭제했어요.')
     } catch (err) {
       setError(err.message)
     }
   }
 
   function editWorkout(workout) {
-    setEditingId(workout.id)
-    setForm(fromWorkout(workout, machines))
-    setDraftMeta((current) => ({ ...current, restored: false }))
-    setActiveTab('log')
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    confirmDraftReplacement(() => {
+      setEditingId(workout.id)
+      setForm(fromWorkout(workout, machines))
+      setDraftMeta((current) => ({ ...current, restored: false }))
+      setActiveTab('log')
+      window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
+      setNotice('기록을 수정한 뒤 하단의 수정 저장을 눌러주세요.')
+    })
   }
 
   function duplicateWorkout(workout) {
-    setEditingId(null)
-    setForm({
-      ...fromWorkout(workout, machines),
-      workoutDate: today,
+    confirmDraftReplacement(() => {
+      setEditingId(null)
+      setForm({
+        ...fromWorkout(workout, machines),
+        workoutDate: today,
+      })
+      setDraftMeta((current) => ({ ...current, restored: false }))
+      setActiveTab('log')
+      window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
+      setNotice('오늘 날짜로 루틴을 불러왔어요. 무게와 횟수를 조절해보세요.')
     })
-    setDraftMeta((current) => ({ ...current, restored: false }))
-    setActiveTab('log')
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function confirmDraftReplacement(onConfirm) {
+    if (hasDraftContent(form, editingId)) {
+      setConfirmation({
+        title: '작성 중인 루틴을 바꿀까요?',
+        description: '아직 저장하지 않은 내용은 사라져요. 현재 루틴을 저장하려면 취소를 눌러주세요.',
+        label: '바꾸기',
+        onConfirm,
+      })
+      return
+    }
+    onConfirm()
   }
 
   function startNewWorkout() {
-    clearDraft({ resetForm: true })
+    confirmDraftReplacement(() => {
+      clearDraft({ resetForm: true })
+      setNotice('')
+      setError('')
+    })
   }
 
   async function saveMachine(event) {
@@ -791,6 +858,7 @@ function App() {
     }
     setError('')
     setMachineSaving(true)
+    setNotice('')
     try {
       await persistMachine({
         category: machineForm.category,
@@ -800,6 +868,7 @@ function App() {
       })
       setMachineForm(blankMachine())
       await loadMachines()
+      setNotice('운동 목록에 추가했어요.')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -809,9 +878,11 @@ function App() {
 
   async function deleteMachine(id) {
     setError('')
+    setNotice('')
     try {
       await removeMachine(id)
       await loadMachines()
+      setNotice('운동 목록에서 삭제했어요. 이전 운동 기록은 유지됩니다.')
     } catch (err) {
       setError(err.message)
     }
@@ -857,7 +928,6 @@ function App() {
       <section className="locked-panel">
         <div className="locked-panel__content">
           <span className="welcome-mark" aria-hidden="true"><Dumbbell size={25} strokeWidth={1.5} /></span>
-          <p className="eyebrow">A little progress, every day</p>
           <h2>{title}</h2>
           <p>{description}</p>
           {authStatus.googleLoginEnabled ? (
@@ -882,7 +952,6 @@ function App() {
               <div><h3>{label}</h3><p>{detail}</p></div>
             </div>
           ))}
-          <span className="welcome-guide__foot">YOUR OWN PACE.</span>
         </div>
       </section>
     )
@@ -937,10 +1006,16 @@ function App() {
 
       <div className="page-heading">
         <div><h1>{PAGES[activeTab].title}</h1><p>{PAGES[activeTab].description}</p></div>
-        {authStatus.authenticated && <span className="page-index">{activeTab === 'log' ? 'WORKOUT / 01' : activeTab === 'history' ? 'HISTORY / 02' : 'LIBRARY / 03'}</span>}
       </div>
 
-      {error && <p className="alert" role="alert">{error}</p>}
+      {error && <p ref={feedbackRef} className="alert" role="alert" tabIndex={-1}>{error}</p>}
+      {notice && (
+        <div className="notice" role="status">
+          <Check size={18} aria-hidden="true" /><p>{notice}</p>
+          <button className="icon-button" type="button" aria-label="안내 닫기" onClick={() => setNotice('')}><X size={18} /></button>
+        </div>
+      )}
+      <ConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} />
       {loading && authStatus.authenticated && <div className="data-loading" role="status"><Loader2 className="spin" size={16} /> 기록을 불러오고 있습니다.</div>}
 
       {activeTab === 'log' && (
@@ -967,9 +1042,16 @@ function App() {
               )}
             </div>
             <div className="draft-strip__actions">
-              {draftMeta.savedAt && <button className="text-button muted" type="button" onClick={() => clearDraft({ resetForm: true })}>비우기</button>}
+              {draftMeta.savedAt && <button className="text-button muted" type="button" onClick={startNewWorkout}>비우기</button>}
             </div>
           </div>
+
+          {selectedWorkout && (
+            <div className="routine-shortcut">
+              <div><span>최근 루틴</span><strong>{selectedWorkout.title}</strong></div>
+              <button className="text-button" type="button" onClick={() => duplicateWorkout(selectedWorkout)}><Copy size={16} /> 불러오기</button>
+            </div>
+          )}
 
           <div className="form-grid">
             <label>
@@ -1006,7 +1088,7 @@ function App() {
           </details>
           </div>
 
-          <div className="exercise-list">
+          <div className="exercise-list" ref={exerciseListRef}>
             {form.exercises.map((exercise, exerciseIndex) => {
               const categoryMachines = machinesByCategory[exercise.category] || []
               const groupedOptions = groupByEquipment(categoryMachines)
@@ -1053,9 +1135,10 @@ function App() {
                       운동
                       <select
                         value={exercise.machineId}
+                        required={!exercise.exerciseName}
                         onChange={(event) => selectMachine(exerciseIndex, event.target.value)}
                       >
-                        <option value="">{categoryLabel(exercise.category)} 운동을 선택하세요</option>
+                        <option value="">{!selectedMachine && exercise.exerciseName ? `${exercise.exerciseName} (이전 기록의 운동)` : `${categoryLabel(exercise.category)} 운동을 선택하세요`}</option>
                         {groupedOptions.map((group) => (
                           <optgroup label={group.type} key={group.type}>
                             {group.items.map((machine) => (
@@ -1117,7 +1200,7 @@ function App() {
                         </button>
                       </div>
                     ))}
-                    <button className="soft-button" type="button" onClick={() => addSet(exerciseIndex)}>
+                    <button className="soft-button" type="button" title="마지막 세트의 무게와 횟수를 이어받습니다" onClick={() => addSet(exerciseIndex)}>
                       <Plus size={17} />
                       세트 추가
                     </button>
@@ -1188,11 +1271,15 @@ function App() {
           </section>
 
           {insights && (
-            <section className="insight-board" aria-label="운동 인사이트">
+            <section className="insight-overview">
+              <button className="insight-toggle" type="button" aria-expanded={showInsights} aria-controls="workout-insights" onClick={() => setShowInsights(!showInsights)}>
+                <span><BarChart3 size={20} /><strong>운동 변화 살펴보기</strong></span>
+                <ChevronDown size={20} />
+              </button>
+            <section id="workout-insights" className="insight-board" aria-label="운동 인사이트" hidden={!showInsights}>
               <article className="insight-card insight-card--trend">
                 <div className="insight-card__head">
                   <div>
-                    <p className="eyebrow">Trend</p>
                     <h2>최근 흐름</h2>
                   </div>
                   {insights.volumeChange >= 0 ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}
@@ -1217,7 +1304,6 @@ function App() {
               <article className="insight-card">
                 <div className="insight-card__head">
                   <div>
-                    <p className="eyebrow">Frequency</p>
                     <h2>4주 빈도</h2>
                   </div>
                   <BarChart3 size={18} />
@@ -1237,13 +1323,13 @@ function App() {
                     )
                   })}
                 </div>
+                <p className="sr-only">{insights.weeklyBuckets.map((bucket) => `${bucket.label} ${bucket.count}회`).join(', ')}</p>
                 <p className="insight-note">자주 갔던 주와 쉬었던 주가 한눈에 보입니다.</p>
               </article>
 
               <article className="insight-card">
                 <div className="insight-card__head">
                   <div>
-                    <p className="eyebrow">Focus</p>
                     <h2>주운동 부위</h2>
                   </div>
                   <PieChart size={18} />
@@ -1269,7 +1355,6 @@ function App() {
               <article className="insight-card">
                 <div className="insight-card__head">
                   <div>
-                    <p className="eyebrow">Progress</p>
                     <h2>운동별 변화</h2>
                   </div>
                   <Target size={18} />
@@ -1300,25 +1385,30 @@ function App() {
                 </div>
               </article>
             </section>
+            </section>
           )}
 
           <div className="section-heading">
             <div>
               <h2>운동 내역 <span className="count-label">{filteredWorkouts.length}</span></h2>
             </div>
-            {loading && <Loader2 className="spin muted" size={20} />}
+            <div className="section-heading__actions">
+              {hasFilters && <button className="text-button" type="button" onClick={() => setFilters({ query: '', category: 'ALL', from: '', to: '' })}>필터 초기화</button>}
+              {loading && <Loader2 className="spin muted" size={20} />}
+            </div>
           </div>
 
           <div className="filter-bar">
-            <label className="search-field">
-              <span className="sr-only">기록 검색</span>
+            <div className="search-field">
               <Search size={17} />
               <input
+                aria-label="기록 검색"
                 value={filters.query}
                 onChange={(event) => setFilters({ ...filters, query: event.target.value })}
                 placeholder="루틴, 운동, 메모 검색"
               />
-            </label>
+              {filters.query && <button className="search-clear icon-button" type="button" aria-label="검색어 지우기" onClick={(event) => { setFilters({ ...filters, query: '' }); event.currentTarget.parentElement.querySelector('input').focus() }}><X size={16} /></button>}
+            </div>
             <label>
               부위
               <select
@@ -1338,6 +1428,7 @@ function App() {
               <input
                 type="date"
                 value={filters.from}
+                max={filters.to || undefined}
                 onChange={(event) => setFilters({ ...filters, from: event.target.value })}
               />
             </label>
@@ -1346,6 +1437,7 @@ function App() {
               <input
                 type="date"
                 value={filters.to}
+                min={filters.from || undefined}
                 onChange={(event) => setFilters({ ...filters, to: event.target.value })}
               />
             </label>
@@ -1361,27 +1453,26 @@ function App() {
                   </div>
                   <div className="history-actions">
                     <button
-                      className="icon-button ghost"
+                      className="record-action"
                       type="button"
                       onClick={() => duplicateWorkout(workout)}
-                      aria-label="복제"
                       title="복제해서 새 기록"
                     >
-                      <Copy size={16} />
+                      <Copy size={16} /><span>불러오기</span>
                     </button>
                     <button
-                      className="icon-button ghost"
+                      className="record-action"
                       type="button"
                       onClick={() => editWorkout(workout)}
                       aria-label="수정"
                       title="수정"
                     >
-                      <Pencil size={16} />
+                      <Pencil size={16} /><span>수정</span>
                     </button>
                     <button
                       className="icon-button ghost"
                       type="button"
-                      onClick={() => deleteWorkout(workout.id)}
+                      onClick={() => setConfirmation({ title: '이 기록을 삭제할까요?', description: `${workout.workoutDate} · ${workout.title}. 삭제한 기록은 되돌릴 수 없어요.`, label: '삭제하기', danger: true, onConfirm: () => deleteWorkout(workout.id) })}
                       aria-label="삭제"
                       title="삭제"
                     >
@@ -1423,6 +1514,7 @@ function App() {
                 <h3>{workouts.length ? '검색 결과가 없습니다.' : '아직 운동 기록이 없습니다.'}</h3>
                 <p>{workouts.length ? '검색어나 날짜 범위를 바꿔보세요.' : '첫 루틴을 기록하고 나만의 흐름을 만들어보세요.'}</p>
                 {!workouts.length && <button className="secondary-button" type="button" onClick={() => setActiveTab('log')}><Plus size={16} /> 첫 운동 기록하기</button>}
+                {workouts.length > 0 && <button className="secondary-button" type="button" onClick={() => setFilters({ query: '', category: 'ALL', from: '', to: '' })}>전체 기록 보기</button>}
               </div>
             )}
           </div>
@@ -1550,16 +1642,24 @@ function App() {
             </button>
           </form>
 
+          <div className="section-heading catalog-heading">
+            <h2>등록한 운동 <span className="count-label">{machines.length}</span></h2>
+            <div className="search-field">
+              <Search size={18} />
+              <input aria-label="운동 목록 검색" value={machineQuery} onChange={(event) => setMachineQuery(event.target.value)} placeholder="운동, 부위, 제조사 검색" />
+              {machineQuery && <button className="search-clear icon-button" type="button" aria-label="운동 검색어 지우기" onClick={(event) => { setMachineQuery(''); event.currentTarget.parentElement.querySelector('input').focus() }}><X size={16} /></button>}
+            </div>
+          </div>
           <div className="machine-groups">
-            {CATEGORIES.map((category) => (
+            {visibleMachineGroups.map((category) => (
               <article className="machine-group" key={category.id}>
                 <div className="machine-group__head">
                   <h3>{category.label}</h3>
-                  <span>{(machinesByCategory[category.id] || []).length}개</span>
+                  <span>{category.items.length}개</span>
                 </div>
                 <div className="machine-list">
-                  {(machinesByCategory[category.id] || []).length === 0 && <p className="machine-empty">등록된 운동이 없습니다.</p>}
-                  {(machinesByCategory[category.id] || []).map((machine) => (
+                  {category.items.length === 0 && <p className="machine-empty">등록된 운동이 없습니다.</p>}
+                  {category.items.map((machine) => (
                     <div className="machine-row" key={machine.id}>
                       <div>
                         <strong>{machine.name}</strong>
@@ -1568,7 +1668,7 @@ function App() {
                       <button
                         className="icon-button ghost"
                         type="button"
-                        onClick={() => deleteMachine(machine.id)}
+                        onClick={() => setConfirmation({ title: '목록에서 삭제할까요?', description: `${machine.name}을 목록에서 삭제해요. 이전 운동 기록은 그대로 남습니다.`, label: '삭제하기', danger: true, onConfirm: () => deleteMachine(machine.id) })}
                         aria-label="운동 삭제"
                         title="운동 삭제"
                       >
@@ -1579,6 +1679,7 @@ function App() {
                 </div>
               </article>
             ))}
+            {!visibleMachineGroups.length && <div className="empty-state"><Search size={28} /><h3>찾는 운동이 없어요.</h3><p>검색어를 바꾸거나 위에서 새 운동을 등록해보세요.</p><button className="secondary-button" type="button" onClick={() => setMachineQuery('')}>전체 운동 보기</button></div>}
           </div>
         </section>
         ) : (

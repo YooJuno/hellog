@@ -1,5 +1,7 @@
 # Health Logger Caddy 배포 - 빠른 시작 가이드
 
+> 현재 운영 사이트는 [HelloG Firebase](https://hellog-juno.web.app)입니다. `main`에 푸시하면 GitHub Actions가 검증 후 자동 배포합니다. 현재 환경의 설정은 [Firebase 배포 가이드](./FIREBASE_DEPLOYMENT.md)를 확인하세요. 아래는 기존 서버의 Caddy 배포 방법입니다.
+
 > **🌐 도메인**: https://hellog.com (자동 HTTPS)
 
 ## 📋 사전 요구사항

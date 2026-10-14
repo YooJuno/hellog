@@ -22,7 +22,6 @@ export default function WorkoutSidebar({ form, recentWorkout, onDuplicate }) {
   return (
     <aside className="workout-sidebar" aria-label="현재 운동 요약">
       <section className="session-summary" aria-labelledby="session-summary-title">
-        <p className="session-summary__eyebrow">SESSION</p>
         <h2 id="session-summary-title">오늘의 구성</h2>
 
         <dl className="session-summary__stats">
