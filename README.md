@@ -56,3 +56,9 @@ Spark 무료 한도 안에서는 상시 운영할 수 있습니다. 무료 한�
 ## 기존 백엔드
 
 `backend/`의 Spring Boot API와 H2 데이터는 보존됩니다. 이 브랜치의 화면은 Firebase를 사용하며 기존 Java API를 호출하지 않습니다. 기존 H2 기록은 Firestore에 자동으로 이전되지 않습니다. `deploy.sh`, `DEPLOYMENT.md`, `QUICK_START.md` 등 기존 서버 배포 문서는 이전 Java 배포 구조용입니다.
+
+## 자동 배포
+
+`main`을 대상으로 하는 PR에서 린트·테스트·빌드를 실행하며, `main`에 반영된 변경은 검증 후 Firebase로 자동 배포합니다. [GitHub Actions](https://github.com/YooJuno/hellog/actions/workflows/firebase.yml)에서 실행 결과와 수동 재배포를 확인할 수 있습니다.
+
+GitHub와 Google Cloud의 배포 인증·변수 설정은 [CI/CD 설명](./FIREBASE_DEPLOYMENT.md#github-cicd)에 있습니다.

@@ -157,3 +157,31 @@ users/{uid}/hiddenMachines/{defaultMachineId}
 `firestore.indexes.json`은 검색하지 않는 `exercises` 배열의 인덱스를 제외합니다. 기록 검색과 필터는 불러온 사용자 기록에서 수행하며 추가 복합 인덱스는 요구하지 않습니다. [Firestore 인덱스 관리](https://firebase.google.com/docs/firestore/query-data/indexing).
 
 기존 H2 기록을 사용하려면 별도 내보내기·사용자 UID 매핑·가져오기 작업이 필요합니다. 이 변경은 기존 H2 데이터나 Java 백엔드를 삭제하거나 변환하지 않습니다.
+
+## GitHub CI/CD
+
+[GitHub Actions의 Firebase 워크플로](https://github.com/YooJuno/hellog/actions/workflows/firebase.yml)가 배포를 자동으로 처리합니다.
+
+- `main`을 대상으로 하는 PR: 린트, 모델 테스트, Firebase 에뮬레이터 통합·접근 규칙 테스트와 빌드를 실행합니다.
+- `main`에 push 또는 병합: 검증에 성공하면 Hosting, Firestore 규칙과 인덱스를 운영 프로젝트에 배포합니다.
+- 수동 재배포: GitHub Actions → Firebase → Run workflow에서 `main`을 선택합니다.
+
+운영 배포는 동시에 한 개만 실행합니다. Google 로그인 제공업체 설정은 초기 배포 때 구성한 값을 유지하며, 변경할 때는 권한이 있는 로컬 계정에서 `npm run deploy`를 실행합니다.
+
+GitHub 저장소의 Actions Variables에 아래 설정을 보관합니다. Firebase 웹 앱 설정은 공개 구성값입니다.
+
+| 변수 | 용도 |
+| --- | --- |
+| `VITE_FIREBASE_API_KEY` | 웹 앱 API 키 |
+| `VITE_FIREBASE_AUTH_DOMAIN` | 인증 도메인 |
+| `VITE_FIREBASE_PROJECT_ID` | `hellog-juno` |
+| `VITE_FIREBASE_APP_ID` | 웹 앱 ID |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | 프로젝트 번호, 선택값 |
+| `FIREBASE_WIF_PROVIDER` | GitHub OIDC 공급자 경로 |
+| `FIREBASE_DEPLOY_SERVICE_ACCOUNT` | 배포 서비스 계정 이메일 |
+
+Google Cloud Workload Identity Federation으로 실행할 때마다 짧게 유효한 배포 자격 증명을 받습니다. 신뢰 조건은 저장소 ID, 소유자 ID, `main`, `.github/workflows/firebase.yml`과 push/수동 실행 이벤트로 제한했습니다. PR 검증 작업에는 클라우드 인증 권한을 부여하지 않습니다. [공식 Google 인증 Action](https://github.com/google-github-actions/auth), [GitHub OIDC 설명](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect).
+
+배포 계정 `github-deploy@hellog-juno.iam.gserviceaccount.com`에는 Hosting 관리자, Firestore 규칙 관리자, 인덱스 관리자와 서비스 사용량 소비자 역할을 부여합니다. 인증 공급자는 `projects/606631735892/locations/global/workloadIdentityPools/github-actions/providers/github`입니다. 생성된 임시 `gha-creds-*.json` 파일은 Git에서 제외하며, 워크플로 종료 시 정리됩니다.
+
+Firebase의 무료 한도와 별개로 GitHub Actions의 실행·성공 여부는 위 워크플로 페이지에서 확인할 수 있습니다. `main`의 실패한 실행은 원인을 수정한 다음 Re-run jobs로 다시 실행합니다.

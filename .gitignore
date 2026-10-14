@@ -12,3 +12,4 @@ node_modules/
 .env.*.local
 firestore-debug.log
 ui-debug.log
+gha-creds-*.json
