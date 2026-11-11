@@ -1,15 +1,17 @@
 import {
   collection,
+  connectFirestoreEmulator,
   deleteDoc,
   doc,
   getDoc,
   getDocs,
+  getFirestore,
   serverTimestamp,
   setDoc,
   updateDoc,
 } from 'firebase/firestore'
 import { DEFAULT_MACHINES } from '../data/defaultMachines.js'
-import { friendlyFirebaseError, requireFirebaseUser } from './firebaseClient.js'
+import { friendlyFirebaseError, getFirebaseServices } from './firebaseClient.js'
 
 /**
  * All operations use the signed-in Firebase uid; no caller-provided owner IDs.
@@ -23,6 +25,17 @@ import { friendlyFirebaseError, requireFirebaseUser } from './firebaseClient.js'
 const CATEGORIES = new Set(['CHEST', 'BACK', 'LEGS', 'SHOULDERS', 'ARMS', 'CORE'])
 const EQUIPMENT_TYPES = new Set(['머신', '케이블', '바벨', '덤벨', '맨몸', '기타'])
 const DEFAULT_MACHINE_BY_ID = new Map(DEFAULT_MACHINES.map((machine) => [machine.id, machine]))
+
+function requireFirebaseUser() {
+  const { auth, useEmulators } = getFirebaseServices()
+  if (!auth.currentUser) throw new Error('로그인이 필요합니다.')
+  const db = getFirestore(auth.app)
+  if (useEmulators && !auth.app.__hellogFirestoreEmulatorConnected) {
+    connectFirestoreEmulator(db, '127.0.0.1', 8080)
+    auth.app.__hellogFirestoreEmulatorConnected = true
+  }
+  return { uid: auth.currentUser.uid, db }
+}
 
 function requiredText(value, label, limit = 100) {
   const text = typeof value === 'string' ? value.trim() : ''

@@ -8,7 +8,7 @@ function formatNumber(value) {
   return Number(value || 0).toLocaleString('ko-KR', { maximumFractionDigits: 1 })
 }
 
-export default function WorkoutSidebar({ form, recentWorkout, onDuplicate }) {
+export default function WorkoutSidebar({ form, recentWorkout, onDuplicate, disabled }) {
   const selectedExercises = form.exercises.filter((exercise) => exercise.exerciseName.trim())
   const totalSets = selectedExercises.reduce((total, exercise) => total + exercise.sets.length, 0)
   const totalVolume = selectedExercises.reduce(
@@ -64,7 +64,7 @@ export default function WorkoutSidebar({ form, recentWorkout, onDuplicate }) {
           </time>
           <p className="recent-routine__name">{recentWorkout.title}</p>
           <p className="recent-routine__meta">총 {recentWorkout.totalSets}세트</p>
-          <button type="button" className="recent-routine__button" onClick={() => onDuplicate(recentWorkout)}>
+          <button type="button" className="recent-routine__button" disabled={disabled} onClick={() => onDuplicate(recentWorkout)}>
             <RotateCcw size={16} aria-hidden="true" />
             이 루틴으로 시작
           </button>

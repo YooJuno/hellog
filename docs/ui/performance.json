@@ -1,0 +1,65 @@
+{
+  "date": "2026-11-12",
+  "baselineCommit": "eef2f565eed1357dc51fedf7649621c566d68ba1",
+  "method": {
+    "browser": "same installed Chrome, headless, via Playwright 1.64.1",
+    "initialLoad": "fresh signed-out context, production Vite build, local HTTP gzip, sum of JS encodedBodySize",
+    "typing": "Vite development server; 4x CPU throttling; 20 exercises with 5 sets each; one weight change and typing Performance check of workout input",
+    "history": "120 fixture records; initial visible history cards"
+  },
+  "before": {
+    "label": "before",
+    "assets": [
+      {
+        "name": "index-C0zZ90tr.js",
+        "encoded": 18883,
+        "decoded": 64271
+      },
+      {
+        "name": "react-vendor-DZDYuGYY.js",
+        "encoded": 60051,
+        "decoded": 192564
+      },
+      {
+        "name": "firebase-core-BzIGmVtD.js",
+        "encoded": 51235,
+        "decoded": 208943
+      },
+      {
+        "name": "firebase-firestore-8fuN6SD8.js",
+        "encoded": 121502,
+        "decoded": 482390
+      }
+    ],
+    "initialJsGzipBytes": 251671,
+    "initialJsBytes": 948168,
+    "typingScriptMs": 9949,
+    "typingTaskMs": 10631,
+    "historyCards": 120
+  },
+  "after": {
+    "label": "after",
+    "assets": [
+      {
+        "name": "index-B-AZzdFu.js",
+        "encoded": 17186,
+        "decoded": 58038
+      },
+      {
+        "name": "react-vendor-DZDYuGYY.js",
+        "encoded": 60051,
+        "decoded": 192564
+      },
+      {
+        "name": "firebase-core-BzIGmVtD.js",
+        "encoded": 51235,
+        "decoded": 208943
+      }
+    ],
+    "initialJsGzipBytes": 128472,
+    "initialJsBytes": 459545,
+    "typingScriptMs": 1049,
+    "typingTaskMs": 1716,
+    "historyCards": 12
+  }
+}

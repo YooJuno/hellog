@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
-  ArrowDownRight,
-  ArrowUpRight,
   BarChart3,
   CalendarDays,
   Check,
@@ -17,17 +15,24 @@ import {
   Pencil,
   LogIn,
   LogOut,
-  PieChart,
   Plus,
+  RefreshCw,
   Save,
   Search,
-  Target,
   Trash2,
   X,
 } from 'lucide-react'
 import './App.css'
 import WorkoutSidebar from './components/WorkoutSidebar.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
+import ExerciseCard from './components/ExerciseCard.jsx'
+import InsightsBoundary from './components/InsightsBoundary.jsx'
+import {
+  CATEGORIES, EQUIPMENT_TYPES, MANUFACTURER_OPTIONS, categoryLabel, formatNumber,
+  normalizeSearch, machineMeta, exerciseManufacturer, exerciseCategory, toPayload,
+  fromWorkout, mergeWorkout, compareMachines, workoutSearchText,
+} from './lib/workoutUtils.js'
+
 import { subscribeAuth, signIn, signOut } from './lib/firebaseClient.js'
 import {
   listWorkouts,
@@ -36,7 +41,9 @@ import {
   listMachines,
   saveMachine as persistMachine,
   deleteMachine as removeMachine,
-} from './lib/firebaseRepository.js'
+} from './lib/workoutService.js'
+
+const WorkoutInsights = lazy(() => import('./components/WorkoutInsights.jsx'))
 
 const now = new Date()
 const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
@@ -49,30 +56,9 @@ const PAGES = {
   gym: { title: '나의 운동 목록', description: '자주 쓰는 기구와 운동을 한곳에 정리하세요.' },
 }
 
-const CATEGORIES = [
-  { id: 'CHEST', label: '가슴' },
-  { id: 'BACK', label: '등' },
-  { id: 'LEGS', label: '하체' },
-  { id: 'SHOULDERS', label: '어깨' },
-  { id: 'ARMS', label: '팔' },
-  { id: 'CORE', label: '복근' },
-]
-
-const EQUIPMENT_TYPES = ['머신', '케이블', '바벨', '덤벨', '맨몸', '기타']
-const MANUFACTURER_OPTIONS = [
-  '뉴텍',
-  '개선스포츠',
-  'DHZ',
-  'Hammer Strength',
-  'Life Fitness',
-  'Technogym',
-  'Matrix',
-  'Precor',
-  '기타',
-]
-
 const blankSet = () => ({ weightKg: 20, reps: 10 })
 const blankExercise = () => ({
+  uiId: crypto.randomUUID(),
   category: 'CHEST',
   machineId: '',
   exerciseName: '',
@@ -95,6 +81,7 @@ const blankMachine = () => ({
 })
 
 const DRAFT_STORAGE_PREFIX = 'health-logger-workout-draft-v1'
+const HISTORY_PAGE_SIZE = 12
 
 function isDefaultSet(set) {
   return Number(set?.weightKg || 0) === 20 && Number(set?.reps || 0) === 10
@@ -132,70 +119,6 @@ function formatDraftTime(value) {
   })
 }
 
-function percentageChange(current, previous) {
-  if (!previous && !current) return 0
-  if (!previous) return 100
-  return ((current - previous) / previous) * 100
-}
-
-function formatSignedNumber(value, suffix = '') {
-  if (!Number.isFinite(value)) return `0${suffix}`
-  const rounded = Math.abs(value) >= 10
-    ? Math.round(value)
-    : Math.round(value * 10) / 10
-  return `${value > 0 ? '+' : value < 0 ? '-' : ''}${formatNumber(Math.abs(rounded))}${suffix}`
-}
-
-function buildSparklinePoints(values, width = 220, height = 58) {
-  if (!values.length) return ''
-  if (values.length === 1) return `0,${height / 2} ${width},${height / 2}`
-
-  const max = Math.max(...values, 1)
-  const min = Math.min(...values, 0)
-  const range = max - min || 1
-
-  return values
-    .map((value, index) => {
-      const x = (width / (values.length - 1)) * index
-      const y = height - ((value - min) / range) * height
-      return `${x},${Number(y.toFixed(2))}`
-    })
-    .join(' ')
-}
-
-function categoryLabel(category) {
-  return CATEGORIES.find((item) => item.id === category)?.label || '미분류'
-}
-
-function formatNumber(value) {
-  return Number(value || 0).toLocaleString('ko-KR', { maximumFractionDigits: 1 })
-}
-
-function normalizeSearch(value) {
-  return (value || '').toLowerCase().replace(/\s+/g, '')
-}
-
-function groupByEquipment(items) {
-  return EQUIPMENT_TYPES.map((type) => ({
-    type,
-    items: items.filter((item) => item.equipmentType === type),
-  })).filter((group) => group.items.length > 0)
-}
-
-function machineManufacturer(machine) {
-  return machine?.manufacturer?.trim() || ''
-}
-
-function exerciseManufacturer(machines, exercise) {
-  return exercise.manufacturer || machineManufacturer(findMachine(machines, exercise))
-}
-
-function machineMeta(machine) {
-  const parts = [machine.equipmentType]
-  if (machineManufacturer(machine)) parts.push(machineManufacturer(machine))
-  return parts.join(' · ')
-}
-
 function matchesExerciseQuery(item, query) {
   const normalizedQuery = normalizeSearch(query)
   if (!normalizedQuery) return false
@@ -209,43 +132,6 @@ function matchesExerciseQuery(item, query) {
   return candidates.some((candidate) => normalizeSearch(candidate).includes(normalizedQuery))
 }
 
-function findMachine(machines, exercise) {
-  if (exercise.machineId) {
-    const byId = machines.find((machine) => String(machine.id) === String(exercise.machineId))
-    if (byId) return byId
-  }
-  return machines.find(
-    (machine) =>
-      machine.name === exercise.exerciseName &&
-      (!exercise.category || machine.category === exercise.category),
-  )
-}
-
-function exerciseCategory(machines, exercise) {
-  return exercise.category || findMachine(machines, exercise)?.category || ''
-}
-
-function toPayload(form, machines) {
-  return {
-    workoutDate: form.workoutDate,
-    title: form.title.trim() || '운동 기록',
-    memo: form.memo?.trim() || null,
-    exercises: form.exercises
-      .filter((exercise) => exercise.exerciseName.trim())
-      .map((exercise) => ({
-        category: exercise.category || null,
-        exerciseName: exercise.exerciseName.trim(),
-        equipment: exercise.equipment?.trim() || null,
-        manufacturer: exerciseManufacturer(machines, exercise) || null,
-        memo: exercise.memo?.trim() || null,
-        sets: exercise.sets.map((set) => ({
-          weightKg: Number(set.weightKg || 0),
-          reps: Number(set.reps || 1),
-        })),
-      })),
-  }
-}
-
 function normalizedManufacturer(machineForm) {
   if (machineForm.equipmentType !== '머신') return null
   if (machineForm.manufacturer === '기타') {
@@ -254,26 +140,11 @@ function normalizedManufacturer(machineForm) {
   return machineForm.manufacturer || null
 }
 
-function fromWorkout(workout, machines) {
-  return {
-    workoutDate: workout.workoutDate,
-    title: workout.title,
-    memo: workout.memo || '',
-    exercises: workout.exercises.map((exercise) => {
-      const machine = findMachine(machines, exercise)
-      return {
-        category: exercise.category || machine?.category || 'CHEST',
-        machineId: machine ? String(machine.id) : '',
-        exerciseName: exercise.exerciseName,
-        equipment: exercise.equipment || machine?.equipmentType || '',
-        manufacturer: exercise.manufacturer || machine?.manufacturer || '',
-        memo: exercise.memo || '',
-        sets: exercise.sets.map((set) => ({
-          weightKg: Number(set.weightKg),
-          reps: set.reps,
-        })),
-      }
-    }),
+function revealInvalidField(event) {
+  let parent = event.target.parentElement
+  while (parent) {
+    if (parent.tagName === 'DETAILS') parent.open = true
+    parent = parent.parentElement
   }
 }
 
@@ -284,7 +155,8 @@ function App() {
   const [machines, setMachines] = useState([])
   const [form, setForm] = useState(blankWorkout)
   const [machineForm, setMachineForm] = useState(blankMachine)
-  const [filters, setFilters] = useState({ query: '', category: 'ALL', from: '', to: '' })
+  const [filters, setFiltersState] = useState({ query: '', category: 'ALL', from: '', to: '' })
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE_SIZE)
   const [editingId, setEditingId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -295,11 +167,29 @@ function App() {
   const [confirmation, setConfirmation] = useState(null)
   const [machineQuery, setMachineQuery] = useState('')
   const [showInsights, setShowInsights] = useState(() => window.matchMedia('(min-width: 601px)').matches)
+  const [showDateFilters, setShowDateFilters] = useState(() => window.matchMedia('(min-width: 801px)').matches)
+  const [sessionDetailsOpen, setSessionDetailsOpen] = useState(() => window.matchMedia('(min-width: 801px)').matches)
   const [draftMeta, setDraftMeta] = useState({ ready: false, restored: false, savedAt: '' })
   const draftUserRef = useRef(null)
   const exerciseListRef = useRef(null)
   const focusNewExerciseRef = useRef(false)
   const feedbackRef = useRef(null)
+  const authSessionRef = useRef(0)
+  const latestDraftRef = useRef({ form, editingId })
+  const userId = authStatus.user?.id
+
+  useEffect(() => {
+    latestDraftRef.current = { form, editingId }
+  }, [form, editingId])
+
+  useLayoutEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' })
+  }, [activeTab])
+
+  const setFilters = useCallback((next) => {
+    setFiltersState(next)
+    setHistoryLimit(HISTORY_PAGE_SIZE)
+  }, [])
 
   const hasFilters = Boolean(filters.query || filters.category !== 'ALL' || filters.from || filters.to)
 
@@ -308,119 +198,6 @@ function App() {
     () => workouts.slice(0, 7).reduce((sum, workout) => sum + Number(workout.totalVolume || 0), 0),
     [workouts],
   )
-
-  const insights = useMemo(() => {
-    if (!workouts.length) return null
-
-    const sorted = [...workouts].sort((left, right) => {
-      if (left.workoutDate !== right.workoutDate) {
-        return right.workoutDate.localeCompare(left.workoutDate)
-      }
-      return 0
-    })
-
-    const recent = sorted.slice(0, 4)
-    const previous = sorted.slice(4, 8)
-    const averageVolumeRecent = recent.reduce((sum, workout) => sum + Number(workout.totalVolume || 0), 0) / Math.max(recent.length, 1)
-    const averageVolumePrevious = previous.reduce((sum, workout) => sum + Number(workout.totalVolume || 0), 0) / Math.max(previous.length, 1)
-    const volumeChange = percentageChange(averageVolumeRecent, averageVolumePrevious)
-
-    const weeklyBuckets = Array.from({ length: 4 }, (_, index) => {
-      const end = new Date()
-      end.setHours(23, 59, 59, 999)
-      end.setDate(end.getDate() - index * 7)
-      const start = new Date(end)
-      start.setDate(start.getDate() - 6)
-      start.setHours(0, 0, 0, 0)
-      const count = sorted.filter((workout) => {
-        const date = new Date(`${workout.workoutDate}T00:00:00`)
-        return date >= start && date <= end
-      }).length
-      return {
-        label: index === 0 ? '이번주' : `${index}주 전`,
-        count,
-      }
-    }).reverse()
-
-    const recentCategorySource = sorted.filter((workout) => {
-      const diff = Math.floor((todayTimestamp - new Date(`${workout.workoutDate}T00:00:00`).getTime()) / 86400000)
-      return diff >= 0 && diff <= 30
-    })
-    const scopedCategorySource = recentCategorySource.length ? recentCategorySource : sorted
-    const categoryTotals = new Map()
-    scopedCategorySource.forEach((workout) => {
-      workout.exercises.forEach((exercise) => {
-        const category = exerciseCategory(machines, exercise) || 'UNKNOWN'
-        const current = categoryTotals.get(category) || 0
-        categoryTotals.set(category, current + (exercise.sets?.length || 0))
-      })
-    })
-
-    const topCategories = [...categoryTotals.entries()]
-      .map(([category, count]) => ({ category, count }))
-      .sort((left, right) => right.count - left.count)
-      .slice(0, 4)
-
-    const totalCategorySets = [...categoryTotals.values()].reduce((sum, count) => sum + count, 0) || 1
-    const mainCategory = topCategories[0]
-
-    const volumeSeries = sorted
-      .slice(0, 6)
-      .reverse()
-      .map((workout) => Number(workout.totalVolume || 0))
-
-    const exerciseSessions = new Map()
-    sorted.forEach((workout) => {
-      workout.exercises.forEach((exercise) => {
-        const current = exerciseSessions.get(exercise.exerciseName) || []
-        current.push({
-          date: workout.workoutDate,
-          volume: (exercise.sets || []).reduce(
-            (sum, set) => sum + Number(set.weightKg || 0) * Number(set.reps || 0),
-            0,
-          ),
-          topWeight: Math.max(...(exercise.sets || []).map((set) => Number(set.weightKg || 0)), 0),
-        })
-        exerciseSessions.set(exercise.exerciseName, current)
-      })
-    })
-
-    const exerciseDeltas = [...exerciseSessions.entries()]
-      .map(([name, sessions]) => {
-        if (sessions.length < 2) return null
-        const [latest, previousSession] = sessions
-        return {
-          name,
-          deltaVolume: latest.volume - previousSession.volume,
-          latestVolume: latest.volume,
-          previousVolume: previousSession.volume,
-          latestWeight: latest.topWeight,
-          previousWeight: previousSession.topWeight,
-        }
-      })
-      .filter(Boolean)
-
-    const topImproved = [...exerciseDeltas]
-      .filter((item) => item.deltaVolume > 0)
-      .sort((left, right) => right.deltaVolume - left.deltaVolume)[0] || null
-    const topDropped = [...exerciseDeltas]
-      .filter((item) => item.deltaVolume < 0)
-      .sort((left, right) => left.deltaVolume - right.deltaVolume)[0] || null
-
-    return {
-      volumeChange,
-      averageVolumeRecent,
-      averageVolumePrevious,
-      weeklyBuckets,
-      topCategories,
-      totalCategorySets,
-      mainCategory,
-      volumeSeries,
-      topImproved,
-      topDropped,
-      recentCount: recent.length,
-    }
-  }, [machines, workouts])
 
   const machinesByCategory = useMemo(
     () =>
@@ -459,9 +236,15 @@ function App() {
       .slice(0, 8)
   }, [exerciseCatalog, machineForm.category, machineForm.name])
 
+  const workoutSearchIndex = useMemo(() => workouts.map((workout) => ({
+    workout,
+    text: workoutSearchText(workout, machines),
+    categories: new Set(workout.exercises.map((exercise) => exerciseCategory(machines, exercise))),
+  })), [workouts, machines])
+
   const filteredWorkouts = useMemo(() => {
-    const query = filters.query.trim().toLowerCase()
-    return workouts.filter((workout) => {
+    const query = normalizeSearch(filters.query)
+    return workoutSearchIndex.filter(({ workout, text, categories }) => {
       const dateMatch =
         (!filters.from || workout.workoutDate >= filters.from) &&
         (!filters.to || workout.workoutDate <= filters.to)
@@ -469,34 +252,18 @@ function App() {
 
       const categoryMatch =
         filters.category === 'ALL' ||
-        workout.exercises.some((exercise) => exerciseCategory(machines, exercise) === filters.category)
+        categories.has(filters.category)
       if (!categoryMatch) return false
 
-      if (!query) return true
-      return (
-        workout.title.toLowerCase().includes(query) ||
-        workout.exercises.some((exercise) =>
-          `${exercise.exerciseName} ${exerciseManufacturer(machines, exercise)} ${exercise.memo || ''}`
-            .toLowerCase()
-            .includes(query),
-        )
-      )
-    })
-  }, [filters, machines, workouts])
+      return !query || text.includes(query)
+    }).map(({ workout }) => workout)
+  }, [filters, workoutSearchIndex])
 
-  async function loadWorkouts() {
-    setWorkouts(await listWorkouts())
-  }
-
-  async function loadMachines() {
-    setMachines(await listMachines())
-  }
-
-  const persistDraft = useCallback((nextForm = form, nextEditingId = editingId) => {
-    if (!authStatus.authenticated || !authStatus.user?.id) return null
+  const persistDraft = useCallback((nextForm, nextEditingId) => {
+    if (!authStatus.authenticated || !userId) return null
 
     try {
-      const key = draftStorageKey(authStatus.user.id)
+      const key = draftStorageKey(userId)
       if (!hasDraftContent(nextForm, nextEditingId)) {
         window.localStorage.removeItem(key)
         setDraftMeta((current) => ({ ...current, restored: false, savedAt: '' }))
@@ -519,7 +286,7 @@ function App() {
     } catch {
       return null
     }
-  }, [authStatus.authenticated, authStatus.user, editingId, form])
+  }, [authStatus.authenticated, userId])
 
   const clearDraft = useCallback(({ resetForm = false } = {}) => {
     if (authStatus.user?.id) {
@@ -544,6 +311,7 @@ function App() {
     const unsubscribe = subscribeAuth(async (status) => {
       const currentVersion = ++version
       if (!active) return
+      authSessionRef.current += 1
       setAuthStatus({ checked: true, ...status })
       setWorkouts([])
       setMachines([])
@@ -552,6 +320,10 @@ function App() {
       setError('')
       setNotice('')
       setConfirmation(null)
+      setSaving(false)
+      setMachineSaving(false)
+      setFilters({ query: '', category: 'ALL', from: '', to: '' })
+      setMachineQuery('')
       setLoading(status.authenticated)
       if (!status.authenticated) return
 
@@ -575,9 +347,10 @@ function App() {
     return () => {
       active = false
       version += 1
+      authSessionRef.current += 1
       unsubscribe()
     }
-  }, [])
+  }, [setFilters])
 
   useEffect(() => {
     if (!authStatus.authenticated || !authStatus.user?.id) {
@@ -601,9 +374,14 @@ function App() {
       }
 
       const snapshot = JSON.parse(raw)
-      if (snapshot?.form) {
+      if (typeof snapshot?.form?.title === 'string' && typeof snapshot.form.workoutDate === 'string'
+        && Array.isArray(snapshot.form.exercises) && snapshot.form.exercises.length > 0 && snapshot.form.exercises.length <= 30
+        && snapshot.form.exercises.every((exercise) => typeof exercise?.exerciseName === 'string'
+          && CATEGORIES.some((category) => category.id === exercise.category)
+          && Array.isArray(exercise.sets) && exercise.sets.length > 0
+          && exercise.sets.every((set) => set && ['number', 'string'].includes(typeof set.weightKg) && ['number', 'string'].includes(typeof set.reps)))) {
         queueMicrotask(() => {
-          setForm(snapshot.form)
+          setForm({ ...blankWorkout(), ...snapshot.form, exercises: snapshot.form.exercises.map((exercise) => ({ ...blankExercise(), ...exercise, uiId: crypto.randomUUID() })) })
           setEditingId(snapshot.editingId ?? null)
           setActiveTab('log')
           setDraftMeta({
@@ -637,7 +415,8 @@ function App() {
     if (!authStatus.authenticated || !authStatus.user?.id || !draftMeta.ready) return undefined
 
     const flushDraft = () => {
-      persistDraft(form, editingId)
+      const latest = latestDraftRef.current
+      persistDraft(latest.form, latest.editingId)
     }
 
     const handleVisibilityChange = () => {
@@ -653,9 +432,9 @@ function App() {
       window.removeEventListener('pagehide', flushDraft)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [authStatus.authenticated, authStatus.user?.id, draftMeta.ready, form, editingId, persistDraft])
+  }, [authStatus.authenticated, authStatus.user?.id, draftMeta.ready, persistDraft])
 
-  function updateExercise(index, field, value) {
+  const updateExercise = useCallback((index, field, value) => {
     setForm((current) => ({
       ...current,
       exercises: current.exercises.map((exercise, exerciseIndex) => {
@@ -666,14 +445,14 @@ function App() {
         return { ...exercise, [field]: value }
       }),
     }))
-  }
+  }, [])
 
-  function selectMachine(exerciseIndex, machineId) {
+  const selectMachine = useCallback((exerciseIndex, machineId) => {
     const machine = machines.find((item) => String(item.id) === String(machineId))
     setForm((current) => ({
       ...current,
       exercises: current.exercises.map((exercise, index) =>
-        index === exerciseIndex && machine
+        index !== exerciseIndex ? exercise : machine
           ? {
               ...exercise,
               category: machine.category,
@@ -682,12 +461,12 @@ function App() {
               equipment: machine.equipmentType,
               manufacturer: machine.manufacturer || '',
             }
-          : exercise,
+          : { ...exercise, machineId: '', exerciseName: '', equipment: '', manufacturer: '' },
       ),
     }))
-  }
+  }, [machines])
 
-  function updateSet(exerciseIndex, setIndex, field, value) {
+  const updateSet = useCallback((exerciseIndex, setIndex, field, value) => {
     setForm((current) => ({
       ...current,
       exercises: current.exercises.map((exercise, currentExerciseIndex) =>
@@ -701,9 +480,10 @@ function App() {
           : exercise,
       ),
     }))
-  }
+  }, [])
 
   function addExercise() {
+    if (form.exercises.length >= 30) return
     focusNewExerciseRef.current = true
     setForm((current) => ({ ...current, exercises: [...current.exercises, blankExercise()] }))
   }
@@ -723,7 +503,7 @@ function App() {
     }
   }, [error])
 
-  function removeExercise(index) {
+  const removeExercise = useCallback((index) => {
     setForm((current) => ({
       ...current,
       exercises:
@@ -731,18 +511,29 @@ function App() {
           ? [blankExercise()]
           : current.exercises.filter((_, exerciseIndex) => exerciseIndex !== index),
     }))
-  }
+  }, [])
 
-  function addSet(exerciseIndex) {
+  const requestRemoveExercise = useCallback((index, exercise) => {
+    if (!exercise.exerciseName) return removeExercise(index)
+    setConfirmation({
+      title: '이 운동을 빼고 기록할까요?',
+      description: `${exercise.exerciseName}의 ${exercise.sets.length}개 세트와 메모가 작성 중인 루틴에서 삭제돼요.`,
+      label: '빼기',
+      danger: true,
+      onConfirm: () => removeExercise(index),
+    })
+  }, [removeExercise])
+
+  const addSet = useCallback((exerciseIndex) => {
     setForm((current) => ({
       ...current,
       exercises: current.exercises.map((exercise, index) =>
         index === exerciseIndex ? { ...exercise, sets: [...exercise.sets, { ...exercise.sets.at(-1) }] } : exercise,
       ),
     }))
-  }
+  }, [])
 
-  function removeSet(exerciseIndex, setIndex) {
+  const removeSet = useCallback((exerciseIndex, setIndex) => {
     setForm((current) => ({
       ...current,
       exercises: current.exercises.map((exercise, index) =>
@@ -757,10 +548,12 @@ function App() {
           : exercise,
       ),
     }))
-  }
+  }, [])
 
   async function saveWorkout(event) {
     event.preventDefault()
+    if (saving) return
+    const session = authSessionRef.current
     const payload = toPayload(form, machines)
     if (payload.exercises.length === 0) {
       setError('부위와 운동을 하나 이상 선택해주세요.')
@@ -771,43 +564,48 @@ function App() {
     setError('')
     setNotice('')
     try {
-      await persistWorkout(payload, editingId)
+      const saved = await persistWorkout(payload, editingId)
+      if (session !== authSessionRef.current) return
+      setWorkouts((current) => mergeWorkout(current, saved))
       clearDraft()
       setForm(blankWorkout())
       setEditingId(null)
       setActiveTab('history')
       setFilters({ query: '', category: 'ALL', from: '', to: '' })
-      await loadWorkouts()
       setNotice(editingId ? '운동 기록을 수정했어요.' : '운동 기록을 저장했어요.')
       window.scrollTo({ top: 0, behavior: 'instant' })
     } catch (err) {
-      setError(err.message)
+      if (session === authSessionRef.current) setError(err.message)
     } finally {
-      setSaving(false)
+      if (session === authSessionRef.current) setSaving(false)
     }
   }
 
   async function deleteWorkout(id) {
+    const session = authSessionRef.current
     setError('')
     setNotice('')
     try {
       await removeWorkout(id)
-      if (editingId === id) {
+      if (session !== authSessionRef.current) return
+      setWorkouts((current) => current.filter((workout) => workout.id !== id))
+      if (latestDraftRef.current.editingId === id) {
         clearDraft()
         setEditingId(null)
         setForm(blankWorkout())
       }
-      await loadWorkouts()
       setNotice('운동 기록을 삭제했어요.')
     } catch (err) {
-      setError(err.message)
+      if (session === authSessionRef.current) setError(err.message)
     }
   }
 
   function editWorkout(workout) {
+    if (saving || loading) return
     confirmDraftReplacement(() => {
       setEditingId(workout.id)
       setForm(fromWorkout(workout, machines))
+      setSessionDetailsOpen(true)
       setDraftMeta((current) => ({ ...current, restored: false }))
       setActiveTab('log')
       window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' })
@@ -816,6 +614,7 @@ function App() {
   }
 
   function duplicateWorkout(workout) {
+    if (saving || loading) return
     confirmDraftReplacement(() => {
       setEditingId(null)
       setForm({
@@ -852,6 +651,8 @@ function App() {
 
   async function saveMachine(event) {
     event.preventDefault()
+    if (machineSaving) return
+    const session = authSessionRef.current
     if (!machineForm.name.trim()) {
       setError('운동 이름을 입력해주세요.')
       return
@@ -860,31 +661,53 @@ function App() {
     setMachineSaving(true)
     setNotice('')
     try {
-      await persistMachine({
+      const saved = await persistMachine({
         category: machineForm.category,
         name: machineForm.name,
         equipmentType: machineForm.equipmentType,
         manufacturer: normalizedManufacturer(machineForm),
       })
+      if (session !== authSessionRef.current) return
+      setMachines((current) => [...current.filter((machine) => machine.id !== saved.id), saved].sort(compareMachines))
       setMachineForm(blankMachine())
-      await loadMachines()
+      setMachineQuery('')
       setNotice('운동 목록에 추가했어요.')
     } catch (err) {
-      setError(err.message)
+      if (session === authSessionRef.current) setError(err.message)
     } finally {
-      setMachineSaving(false)
+      if (session === authSessionRef.current) setMachineSaving(false)
     }
   }
 
   async function deleteMachine(id) {
+    const session = authSessionRef.current
     setError('')
     setNotice('')
     try {
       await removeMachine(id)
-      await loadMachines()
+      if (session !== authSessionRef.current) return
+      setMachines((current) => current.filter((machine) => machine.id !== id))
       setNotice('운동 목록에서 삭제했어요. 이전 운동 기록은 유지됩니다.')
     } catch (err) {
-      setError(err.message)
+      if (session === authSessionRef.current) setError(err.message)
+    }
+  }
+
+  async function refreshData(kind) {
+    if (loading || saving || machineSaving) return
+    const session = authSessionRef.current
+    setLoading(true)
+    setError('')
+    setNotice('')
+    try {
+      const items = kind === 'machines' ? await listMachines() : await listWorkouts()
+      if (session !== authSessionRef.current) return
+      if (kind === 'machines') setMachines(items)
+      else setWorkouts(items)
+    } catch (err) {
+      if (session === authSessionRef.current) setError(err.message)
+    } finally {
+      if (session === authSessionRef.current) setLoading(false)
     }
   }
 
@@ -1021,7 +844,8 @@ function App() {
       {activeTab === 'log' && (
         authStatus.authenticated ? (
         <div className="workspace-grid">
-        <form className="planner" onSubmit={saveWorkout}>
+        <form className="planner" onSubmit={saveWorkout} onInvalidCapture={revealInvalidField}>
+          <fieldset className="form-fields" disabled={saving || loading}>
           <div className="section-heading">
             <div>
               <h2>{editingId ? '기록 수정' : '루틴 작성'}</h2>
@@ -1037,7 +861,7 @@ function App() {
               {!draftMeta.savedAt && !draftMeta.restored && <span className="draft-pill">작성 내용 자동 임시 저장</span>}
               {editingId && <span className="draft-pill accent">이전 기록 수정 중</span>}
               {draftMeta.restored && <span className="draft-pill">임시 저장 복구됨</span>}
-              {draftMeta.savedAt && (
+              {draftMeta.savedAt && !draftMeta.restored && (
                 <span className="draft-pill">임시 저장 {formatDraftTime(draftMeta.savedAt)}</span>
               )}
             </div>
@@ -1053,6 +877,12 @@ function App() {
             </div>
           )}
 
+          <details className="session-info" open={sessionDetailsOpen} onToggle={(event) => setSessionDetailsOpen(event.currentTarget.open)}>
+            <summary>
+              <span className="session-info__title"><strong>{form.title || '오늘 운동'}</strong><time dateTime={form.workoutDate}><CalendarDays size={14} />{form.workoutDate.replaceAll('-', '. ')}</time></span>
+              <span className="session-info__action">루틴 설정 <ChevronDown size={17} /></span>
+            </summary>
+          <div className="session-info__fields">
           <div className="form-grid">
             <label>
               날짜
@@ -1074,7 +904,7 @@ function App() {
             </label>
           </div>
           <details className="routine-note">
-            <summary>루틴 메모 <span>선택</span></summary>
+            <summary>루틴 메모 <span>{form.memo ? '작성됨' : '선택'}</span></summary>
           <label>
             메모
             <textarea
@@ -1087,140 +917,29 @@ function App() {
           </label>
           </details>
           </div>
+          </details>
+          </div>
 
           <div className="exercise-list" ref={exerciseListRef}>
-            {form.exercises.map((exercise, exerciseIndex) => {
-              const categoryMachines = machinesByCategory[exercise.category] || []
-              const groupedOptions = groupByEquipment(categoryMachines)
-              const selectedMachine = findMachine(machines, exercise)
-              const manufacturer = machineManufacturer(selectedMachine)
-              return (
-                <article className="exercise-card" key={`exercise-${exerciseIndex}`}>
-                  <div className="exercise-card__head">
-                    <span className="order-badge">{exerciseIndex + 1}</span>
-                    <div>
-                      <h3>{exercise.exerciseName || '운동 선택'}</h3>
-                      <p>
-                        {categoryLabel(exercise.category)} ·{' '}
-                        {exercise.sets.length}세트
-                      </p>
-                    </div>
-                    <button
-                      className="icon-button ghost"
-                      type="button"
-                      onClick={() => removeExercise(exerciseIndex)}
-                      aria-label="운동 삭제"
-                      title="운동 삭제"
-                    >
-                      <Trash2 size={17} />
-                    </button>
-                  </div>
-
-                  <div className="category-pills">
-                    {CATEGORIES.map((category) => (
-                      <button
-                        className={exercise.category === category.id ? 'selected' : ''}
-                        key={category.id}
-                        type="button"
-                        aria-pressed={exercise.category === category.id}
-                        onClick={() => updateExercise(exerciseIndex, 'category', category.id)}
-                      >
-                        {category.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="exercise-select">
-                    <label>
-                      운동
-                      <select
-                        value={exercise.machineId}
-                        required={!exercise.exerciseName}
-                        onChange={(event) => selectMachine(exerciseIndex, event.target.value)}
-                      >
-                        <option value="">{!selectedMachine && exercise.exerciseName ? `${exercise.exerciseName} (이전 기록의 운동)` : `${categoryLabel(exercise.category)} 운동을 선택하세요`}</option>
-                        {groupedOptions.map((group) => (
-                          <optgroup label={group.type} key={group.type}>
-                            {group.items.map((machine) => (
-                              <option value={machine.id} key={machine.id}>
-                                {machine.name}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-
-                  {manufacturer && (
-                    <p className="meta-note">제조사: {manufacturer}</p>
-                  )}
-
-                  <div className="sets">
-                    <div className="sets-heading" aria-hidden="true"><span>세트</span><span>무게 <small>kg</small></span><span>횟수</span><span /></div>
-                    {exercise.sets.map((set, setIndex) => (
-                      <div className="set-row" key={`set-${exerciseIndex}-${setIndex}`}>
-                        <span>{String(setIndex + 1).padStart(2, '0')}</span>
-                        <label>
-                          <span className="sr-only">운동 {exerciseIndex + 1}, {setIndex + 1}세트 무게 (kg)</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.5"
-                            required
-                            inputMode="decimal"
-                            value={set.weightKg}
-                            onChange={(event) =>
-                              updateSet(exerciseIndex, setIndex, 'weightKg', event.target.value)
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span className="sr-only">운동 {exerciseIndex + 1}, {setIndex + 1}세트 횟수</span>
-                          <input
-                            type="number"
-                            min="1"
-                            step="1"
-                            required
-                            inputMode="numeric"
-                            value={set.reps}
-                            onChange={(event) =>
-                              updateSet(exerciseIndex, setIndex, 'reps', event.target.value)
-                            }
-                          />
-                        </label>
-                        <button
-                          className="icon-button ghost"
-                          type="button"
-                          onClick={() => removeSet(exerciseIndex, setIndex)}
-                          aria-label="세트 삭제"
-                          title="세트 삭제"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    ))}
-                    <button className="soft-button" type="button" title="마지막 세트의 무게와 횟수를 이어받습니다" onClick={() => addSet(exerciseIndex)}>
-                      <Plus size={17} />
-                      세트 추가
-                    </button>
-                  </div>
-
-                  <label>
-                    운동 메모
-                    <input
-                      value={exercise.memo}
-                      onChange={(event) => updateExercise(exerciseIndex, 'memo', event.target.value)}
-                      placeholder="그립, 의자 높이, 자세 포인트"
-                    />
-                  </label>
-                </article>
-              )
-            })}
+            {form.exercises.map((exercise, exerciseIndex) => (
+              <ExerciseCard
+                key={exercise.uiId || exerciseIndex}
+                exercise={exercise}
+                exerciseIndex={exerciseIndex}
+                categoryMachines={machinesByCategory[exercise.category]}
+                machines={machines}
+                updateExercise={updateExercise}
+                selectMachine={selectMachine}
+                updateSet={updateSet}
+                removeExercise={requestRemoveExercise}
+                addSet={addSet}
+                removeSet={removeSet}
+              />
+            ))}
           </div>
 
           <div className="form-actions">
-            <button className="secondary-button" type="button" onClick={addExercise}>
+            <button className="secondary-button" type="button" onClick={addExercise} disabled={form.exercises.length >= 30} title={form.exercises.length >= 30 ? '운동은 최대 30개까지 기록할 수 있어요' : undefined}>
               <ListPlus size={18} />
               운동 추가
             </button>
@@ -1238,8 +957,9 @@ function App() {
               {saving ? '저장 중' : editingId ? '수정 저장' : '기록 저장'}
             </button>
           </div>
+          </fieldset>
         </form>
-        <WorkoutSidebar form={form} recentWorkout={selectedWorkout} onDuplicate={duplicateWorkout} />
+        <WorkoutSidebar form={form} recentWorkout={selectedWorkout} onDuplicate={duplicateWorkout} disabled={saving || loading} />
         </div>
         ) : (
           renderLoginPrompt(
@@ -1270,121 +990,17 @@ function App() {
             </div>
           </section>
 
-          {insights && (
+          {workouts.length > 0 && (
             <section className="insight-overview">
               <button className="insight-toggle" type="button" aria-expanded={showInsights} aria-controls="workout-insights" onClick={() => setShowInsights(!showInsights)}>
                 <span><BarChart3 size={20} /><strong>운동 변화 살펴보기</strong></span>
                 <ChevronDown size={20} />
               </button>
-            <section id="workout-insights" className="insight-board" aria-label="운동 인사이트" hidden={!showInsights}>
-              <article className="insight-card insight-card--trend">
-                <div className="insight-card__head">
-                  <div>
-                    <h2>최근 흐름</h2>
-                  </div>
-                  {insights.volumeChange >= 0 ? <ArrowUpRight size={18} /> : <ArrowDownRight size={18} />}
-                </div>
-                <div className="trend-stat">
-                  <strong>{insights.averageVolumePrevious ? formatSignedNumber(insights.volumeChange, '%') : '—'}</strong>
-                  <span>최근 {insights.recentCount}회 평균 볼륨</span>
-                </div>
-                <div className="sparkline">
-                  <svg viewBox="0 0 220 58" preserveAspectRatio="none" aria-hidden="true">
-                    <polyline points={buildSparklinePoints(insights.volumeSeries)} />
-                  </svg>
-                </div>
-                <p className="insight-note">
-                  최근 평균 {formatNumber(insights.averageVolumeRecent)}kg
-                  {insights.averageVolumePrevious
-                    ? ` / 이전 구간 ${formatNumber(insights.averageVolumePrevious)}kg`
-                    : ' / 비교할 이전 기록이 더 쌓이면 더 정확해져요.'}
-                </p>
-              </article>
-
-              <article className="insight-card">
-                <div className="insight-card__head">
-                  <div>
-                    <h2>4주 빈도</h2>
-                  </div>
-                  <BarChart3 size={18} />
-                </div>
-                <div className="week-bars" aria-hidden="true">
-                  {insights.weeklyBuckets.map((bucket) => {
-                    const maxCount = Math.max(...insights.weeklyBuckets.map((item) => item.count), 1)
-                    const height = `${Math.max((bucket.count / maxCount) * 100, bucket.count ? 18 : 8)}%`
-                    return (
-                      <div className="week-bar" key={bucket.label}>
-                        <span>{bucket.count}</span>
-                        <div>
-                          <i style={{ height }} />
-                        </div>
-                        <small>{bucket.label}</small>
-                      </div>
-                    )
-                  })}
-                </div>
-                <p className="sr-only">{insights.weeklyBuckets.map((bucket) => `${bucket.label} ${bucket.count}회`).join(', ')}</p>
-                <p className="insight-note">자주 갔던 주와 쉬었던 주가 한눈에 보입니다.</p>
-              </article>
-
-              <article className="insight-card">
-                <div className="insight-card__head">
-                  <div>
-                    <h2>주운동 부위</h2>
-                  </div>
-                  <PieChart size={18} />
-                </div>
-                <div className="focus-list">
-                  {insights.topCategories.map((item) => (
-                    <div className="focus-row" key={item.category}>
-                      <div className="focus-row__label">
-                        <strong>{categoryLabel(item.category)}</strong>
-                        <span>{Math.round((item.count / insights.totalCategorySets) * 100)}%</span>
-                      </div>
-                      <div className="focus-row__bar">
-                        <i style={{ width: `${(item.count / insights.totalCategorySets) * 100}%` }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p className="insight-note">
-                  가장 많이 한 부위는 {categoryLabel(insights.mainCategory?.category)}입니다.
-                </p>
-              </article>
-
-              <article className="insight-card">
-                <div className="insight-card__head">
-                  <div>
-                    <h2>운동별 변화</h2>
-                  </div>
-                  <Target size={18} />
-                </div>
-                <div className="progress-list">
-                  <div className="progress-item">
-                    <span className="progress-item__badge up">좋아진 운동</span>
-                    {insights.topImproved ? (
-                      <div>
-                        <strong>{insights.topImproved.name}</strong>
-                        <p>{formatSignedNumber(insights.topImproved.deltaVolume, 'kg')} 볼륨</p>
-                      </div>
-                    ) : (
-                      <p>비교할 이전 기록이 조금 더 쌓이면 보여드릴게요.</p>
-                    )}
-                  </div>
-                  <div className="progress-item">
-                    <span className="progress-item__badge down">쉬어간 운동</span>
-                    {insights.topDropped ? (
-                      <div>
-                        <strong>{insights.topDropped.name}</strong>
-                        <p>{formatSignedNumber(insights.topDropped.deltaVolume, 'kg')} 볼륨</p>
-                      </div>
-                    ) : (
-                      <p>최근 기록은 전반적으로 안정적이에요.</p>
-                    )}
-                  </div>
-                </div>
-              </article>
-            </section>
+            <div id="workout-insights" hidden={!showInsights}>
+            {showInsights && <InsightsBoundary><Suspense fallback={<div className="data-loading" role="status"><Loader2 className="spin" size={16} /> 통계를 준비하고 있어요.</div>}>
+              <WorkoutInsights workouts={workouts} machines={machines} todayTimestamp={todayTimestamp} />
+            </Suspense></InsightsBoundary>}
+            </div>
             </section>
           )}
 
@@ -1394,7 +1010,7 @@ function App() {
             </div>
             <div className="section-heading__actions">
               {hasFilters && <button className="text-button" type="button" onClick={() => setFilters({ query: '', category: 'ALL', from: '', to: '' })}>필터 초기화</button>}
-              {loading && <Loader2 className="spin muted" size={20} />}
+              <button className="text-button" type="button" disabled={loading || saving} onClick={() => refreshData('workouts')}><RefreshCw className={loading ? 'spin' : ''} size={16} /> 새로고침</button>
             </div>
           </div>
 
@@ -1423,8 +1039,9 @@ function App() {
                 ))}
               </select>
             </label>
+            <div id="history-date-filters" className="date-filters" hidden={!showDateFilters}>
             <label>
-              시작
+              시작 날짜
               <input
                 type="date"
                 value={filters.from}
@@ -1433,7 +1050,7 @@ function App() {
               />
             </label>
             <label>
-              종료
+              종료 날짜
               <input
                 type="date"
                 value={filters.to}
@@ -1441,10 +1058,22 @@ function App() {
                 onChange={(event) => setFilters({ ...filters, to: event.target.value })}
               />
             </label>
+            </div>
+          </div>
+
+          <div className="history-periods" aria-label="빠른 날짜 필터">
+            {[[0, '전체 기간'], [7, '최근 7일'], [30, '최근 30일']].map(([days, label]) => {
+              const from = new Date(`${today}T12:00:00`)
+              from.setDate(from.getDate() - days + 1)
+              const fromDate = days ? `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-${String(from.getDate()).padStart(2, '0')}` : ''
+              const selected = filters.from === fromDate && filters.to === (days ? today : '')
+              return <button type="button" key={days} aria-pressed={selected} onClick={() => setFilters({ ...filters, from: fromDate, to: days ? today : '' })}>{label}</button>
+            })}
+            <button className="history-periods__custom" type="button" aria-expanded={showDateFilters} aria-controls="history-date-filters" onClick={() => setShowDateFilters(!showDateFilters)}>기간 {showDateFilters ? '접기' : '선택'} <ChevronDown size={15} /></button>
           </div>
 
           <div className="history-grid">
-            {filteredWorkouts.map((workout) => (
+            {filteredWorkouts.slice(0, historyLimit).map((workout) => (
               <article className="history-card" key={workout.id}>
                 <div className="history-card__top">
                   <div>
@@ -1455,6 +1084,7 @@ function App() {
                     <button
                       className="record-action"
                       type="button"
+                      disabled={saving || loading}
                       onClick={() => duplicateWorkout(workout)}
                       title="복제해서 새 기록"
                     >
@@ -1463,6 +1093,7 @@ function App() {
                     <button
                       className="record-action"
                       type="button"
+                      disabled={saving || loading}
                       onClick={() => editWorkout(workout)}
                       aria-label="수정"
                       title="수정"
@@ -1472,6 +1103,7 @@ function App() {
                     <button
                       className="icon-button ghost"
                       type="button"
+                      disabled={saving || loading}
                       onClick={() => setConfirmation({ title: '이 기록을 삭제할까요?', description: `${workout.workoutDate} · ${workout.title}. 삭제한 기록은 되돌릴 수 없어요.`, label: '삭제하기', danger: true, onConfirm: () => deleteWorkout(workout.id) })}
                       aria-label="삭제"
                       title="삭제"
@@ -1485,6 +1117,7 @@ function App() {
                   <span>{workout.totalReps}회</span>
                   <span>{formatNumber(workout.totalVolume)}kg</span>
                 </div>
+                {workout.memo && <p className="record-note">{workout.memo}</p>}
                 <ol className="exercise-summary">
                   {workout.exercises.map((exercise) => (
                     <li key={exercise.id}>
@@ -1502,6 +1135,7 @@ function App() {
                             .map((set) => `${formatNumber(set.weightKg)}kg x ${set.reps}`)
                             .join(' / ')}
                         </small>
+                        {exercise.memo && <p className="exercise-summary__note">{exercise.memo}</p>}
                       </span>
                     </li>
                   ))}
@@ -1518,6 +1152,10 @@ function App() {
               </div>
             )}
           </div>
+          {filteredWorkouts.length > 0 && <div className="history-pagination">
+            <p role="status">전체 {filteredWorkouts.length}개 중 {Math.min(historyLimit, filteredWorkouts.length)}개 표시</p>
+            {filteredWorkouts.length > historyLimit && <button className="secondary-button" type="button" onClick={() => setHistoryLimit((current) => current + HISTORY_PAGE_SIZE)}>기록 더 보기 <ChevronDown size={17} /></button>}
+          </div>}
         </section>
         ) : (
           renderLoginPrompt(
@@ -1535,9 +1173,11 @@ function App() {
               <h2>운동 추가</h2>
               <p className="section-description">목록에 없는 운동을 직접 등록하세요.</p>
             </div>
+            <button className="text-button" type="button" disabled={loading || machineSaving} onClick={() => refreshData('machines')}><RefreshCw className={loading ? 'spin' : ''} size={16} /> 목록 새로고침</button>
           </div>
 
           <form className="machine-form" onSubmit={saveMachine}>
+            <fieldset className="form-fields" disabled={machineSaving || loading}>
             <label>
               부위
               <select
@@ -1640,6 +1280,7 @@ function App() {
             <button className="primary-button" type="submit" disabled={machineSaving || loading}>
               {machineSaving ? <Loader2 className="spin" size={17} /> : <Plus size={17} />} 운동 추가
             </button>
+            </fieldset>
           </form>
 
           <div className="section-heading catalog-heading">

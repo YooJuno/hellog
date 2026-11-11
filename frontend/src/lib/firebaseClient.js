@@ -7,7 +7,6 @@ import {
   signInWithPopup,
   signOut as firebaseSignOut,
 } from 'firebase/auth'
-import { connectFirestoreEmulator, getFirestore } from 'firebase/firestore'
 
 const env = import.meta.env || {}
 const firebaseConfig = {
@@ -62,23 +61,12 @@ export function getFirebaseServices() {
   const existingApp = getApps().find((app) => app.name === 'hellog')
   const app = existingApp || initializeApp(firebaseConfig, 'hellog')
   const auth = getAuth(app)
-  const db = getFirestore(app)
   if (env.VITE_USE_FIREBASE_EMULATORS === 'true') {
     // Firebase service instances survive Vite module replacement.
     if (!auth.emulatorConfig) connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true })
-    if (!app.__hellogFirestoreEmulatorConnected) {
-      connectFirestoreEmulator(db, '127.0.0.1', 8080)
-      app.__hellogFirestoreEmulatorConnected = true
-    }
   }
-  services = { auth, db }
+  services = { auth, useEmulators: env.VITE_USE_FIREBASE_EMULATORS === 'true' }
   return services
-}
-
-export function requireFirebaseUser() {
-  const { auth, db } = getFirebaseServices()
-  if (!auth.currentUser) throw new Error('로그인이 필요합니다.')
-  return { uid: auth.currentUser.uid, db }
 }
 
 function authStatus(user, enabled = firebaseConfigured) {
